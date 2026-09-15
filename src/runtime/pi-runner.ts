@@ -222,7 +222,7 @@ export class PiRunner implements AgentRunner {
         const normalized = normalizeDecisionInput(parsed, request.snapshot);
         const validated = decisionSchema.safeParse(normalized.value);
         if (!validated.success) throw new Error(formatValidationError(validated.error));
-        validateDecisionReferences(request.snapshot, validated.data);
+        validateDecisionReferences(request.snapshot, validated.data, request.mode);
         normalizationChanges = normalized.changes;
         return validated.data;
       }); }

@@ -17,6 +17,36 @@ function board(): BoardSnapshot {
 }
 
 describe("Decision reference validation", () => {
+  it("requires root satisfaction and a terminal conclusion together only at the final review", () => {
+    const snapshot = board(), original = structuredClone(snapshot);
+    const update = { id: "G0", status: "satisfied" as const, factIds: ["F-fixture"], reason: "Fixture comparison completed" };
+    const terminal: Decision["conclusion"] = { outcome: "NOT_REPRODUCED", reason: "Synthetic fixture checked" };
+    const completion: Decision = { summary: "Complete fixture", updateGoals: [update], conclusion: terminal };
+    expect(() => validateDecisionReferences(snapshot, completion, "metacog")).not.toThrow();
+    for (const conclusion of [undefined, { outcome: "NEED_INPUT" as const, reason: "Fixture input is missing" }]) {
+      expect(() => validateDecisionReferences(snapshot, { ...completion, conclusion }, "metacog")).toThrow("final conclusion in the same review");
+    }
+    expect(() => validateDecisionReferences(snapshot, { ...completion, updateGoals: undefined }, "metacog")).toThrow("root goal G0 to be satisfied");
+    expect(() => validateDecisionReferences(snapshot, { ...completion, updateGoals: [{ ...update, status: "abandoned" }] }, "metacog")).toThrow("root goal cannot be abandoned");
+    expect(() => validateDecisionReferences(snapshot, { ...completion, updateGoals: [{ ...update, factIds: [] }] }, "metacog")).toThrow("Satisfied goals require evidence-backed facts");
+    // Ordinary Decide proposals still request a fresh review through the controller.
+    expect(() => validateDecisionReferences(snapshot, { ...completion, conclusion: undefined }, "decide")).not.toThrow();
+    expect(() => validateDecisionReferences(snapshot, { ...completion, updateGoals: undefined }, "decide")).not.toThrow();
+    expect(() => validateDecisionReferences(snapshot, { summary: "Continue research" }, "metacog")).not.toThrow();
+    expect(() => validateDecisionReferences(snapshot, { summary: "Waiting", conclusion: { outcome: "NEED_INPUT", reason: "Specific fixture input missing" } }, "metacog")).not.toThrow();
+    expect(snapshot).toEqual(original);
+  });
+
+  it("accepts an already satisfied root and leaves child-only satisfaction compatible with NEED_INPUT", () => {
+    const snapshot = board();
+    snapshot.goals[0]!.status = "satisfied"; snapshot.goals[0]!.factIds = ["F-fixture"];
+    expect(() => validateDecisionReferences(snapshot, { summary: "Complete fixture", conclusion: { outcome: "NOT_REPRODUCED", reason: "Fixture checked" } }, "metacog")).not.toThrow();
+    snapshot.goals[0]!.status = "active";
+    snapshot.goals.push({ id: "G-child", description: "Local check", parentId: "G0", status: "active", factIds: [] });
+    expect(() => validateDecisionReferences(snapshot, { summary: "Child completed; root needs another input", updateGoals: [{ id: "G-child", status: "satisfied", factIds: ["F-fixture"], reason: "Child fixture checked" }],
+      conclusion: { outcome: "NEED_INPUT", reason: "Specific fixture input missing" } }, "metacog")).not.toThrow();
+  });
+
   it("diagnoses review lifecycle and reference errors together without promoting a lead", () => {
     const snapshot = board();
     snapshot.findings[0]!.status = "lead";

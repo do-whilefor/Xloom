@@ -7,7 +7,7 @@ import { taskDirectory } from "./workspace.js";
 import { decisionSchema, executionSchema, projectConfigSchema, usageSchema } from "./schema.js";
 import { normalizeExecutionInput } from "./loop/execution-input.js";
 import { attemptKeys, legacyProgressMarkers } from "./loop/attempts.js";
-import { inspectGoalDeclarations } from "./loop/goals.js";
+import { assertGoalSatisfactionFacts, assertRootGoalUpdate, assertSatisfiedRoot, inspectGoalDeclarations } from "./loop/goals.js";
 import { findingReviewErrors } from "./loop/reviews.js";
 import { invalidateObservationReviews } from "./observations/changes.js";
 import { evidenceNavigationRecords } from "./loop/finding-context.js";
@@ -280,12 +280,10 @@ export class BlackboardStore {
         const goal = board.goals.find(item => item.id === update.id);
         assert(goal?.status === "active", "Unknown or inactive goal.");
         if (goal.id === "G0") {
-          assert(update.status === "satisfied", "The root goal cannot be abandoned; unfinished work must remain active.");
-          assert(run.mode === "metacog", "Root goal completion requires a fresh metacognitive review.");
-          assert(decision.conclusion && decision.conclusion.outcome !== "NEED_INPUT", "Root goal completion requires a final conclusion in the same review; missing input is not completion.");
+          assertRootGoalUpdate(update, decision.conclusion, run.mode);
         }
         factsExist(update.factIds);
-        if (update.status === "satisfied") assert(update.factIds.length > 0, "Satisfied goals require evidence-backed facts.");
+        assertGoalSatisfactionFacts(update);
         assert(!board.steps.some(step => step.goalId === goal.id && ["ready", "claimed"].includes(step.status)), "Resolve a goal's pending steps first.");
         assert(!board.goals.some(child => child.parentId === goal.id && child.status === "active"), "Resolve active child goals first.");
         goal.status = update.status; goal.factIds = update.factIds;
@@ -529,7 +527,7 @@ export class BlackboardStore {
     assert(!board.findings.some(finding => finding.observationReview), "Changed observations require a fresh Finding review before conclusion.");
     assert(board.completedSteps > 0, "Cannot conclude before execution.");
     const root = board.goals.find(goal => goal.id === "G0" && goal.parentId === null);
-    assert(root?.status === "satisfied", "Final completion requires the root goal G0 to be satisfied, not just an individual finding.");
+    assertSatisfiedRoot(root);
     assert(!board.goals.some(goal => goal.id !== "G0" && goal.status === "active"), "Resolve all active child goals before final completion.");
     assert(root.factIds.length > 0, "Root goal completion requires evidence-backed facts.");
     for (const factId of root.factIds) {

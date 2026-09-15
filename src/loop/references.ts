@@ -1,12 +1,12 @@
-import type { BoardSnapshot, Decision } from "../types.js";
-import { inspectGoalDeclarations } from "./goals.js";
+import type { BoardSnapshot, Decision, Mode } from "../types.js";
+import { assertRootGoalUpdate, assertSatisfiedRoot, inspectGoalDeclarations } from "./goals.js";
 import { findingReviewErrors } from "./reviews.js";
 import { applyGapDecision } from "../knowledge/gaps.js";
 import { assessCvss } from "../scoring/cvss.js";
 
 /** Check all explicit references against the complete board before the one repair
  * request. Report every bad reference together; never guess replacement IDs. */
-export function validateDecisionReferences(board: BoardSnapshot, decision: Decision): void {
+export function validateDecisionReferences(board: BoardSnapshot, decision: Decision, mode?: Exclude<Mode, "execute">): void {
   if (decision.gapReviews?.length || decision.steps?.some(step => step.revisits?.length)) {
     const staged = structuredClone(board);
     const steps = (decision.steps ?? []).map((step, index) => ({ ...step, id: `pending-${index}`, status: "ready" as const, attempts: 0, runId: null, leaseUntil: null }));
@@ -63,4 +63,14 @@ export function validateDecisionReferences(board: BoardSnapshot, decision: Decis
   });
   const pocGuidance = evidenceLinks.size ? ` Attached evidenceIds by Finding: ${JSON.stringify(Object.fromEntries(evidenceLinks))}. Use an attached ID only if it supports the review; otherwise defer that review and plan Execute to report/link the required evidence via the existing Finding key. Do not substitute IDs merely to pass validation.` : "";
   if (errors.length) throw new Error(`${errors.join("; ")}.${pocGuidance} Copy exact IDs from the committed blackboard (Fact IDs also appear in factIndex); never change ID prefixes, truncate IDs or guess replacements. Evidence IDs and batch-local refs are not Fact IDs. New Goals may reference an existing or earlier new parent Goal.`);
+  // Ordinary Decide may propose completion for the controller's fresh metacog
+  // handoff. Only the final reviewing role must satisfy the commit contract now.
+  if (mode === "metacog") {
+    const updates = decision.updateGoals?.filter(update => update.id === "G0") ?? [];
+    for (const update of updates) assertRootGoalUpdate(update, decision.conclusion, mode);
+    if (decision.conclusion && decision.conclusion.outcome !== "NEED_INPUT") {
+      const root = board.goals.find(goal => goal.id === "G0" && goal.parentId === null), update = updates.at(-1);
+      assertSatisfiedRoot(root && update ? { ...root, status: update.status, factIds: update.factIds } : root);
+    }
+  }
 }

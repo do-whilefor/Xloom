@@ -1,4 +1,20 @@
-import type { Decision, Goal } from "../types.js";
+import type { Decision, Goal, Mode } from "../types.js";
+
+export function assertGoalSatisfactionFacts(update: NonNullable<Decision["updateGoals"]>[number]): void {
+  if (update.status === "satisfied" && !update.factIds.length) throw new Error("Satisfied goals require evidence-backed facts.");
+}
+
+/** The root update and terminal outcome form one review, in both preflight and Store. */
+export function assertRootGoalUpdate(update: NonNullable<Decision["updateGoals"]>[number], conclusion: Decision["conclusion"], mode: Mode): void {
+  if (update.status !== "satisfied") throw new Error("The root goal cannot be abandoned; unfinished work must remain active.");
+  if (mode !== "metacog") throw new Error("Root goal completion requires a fresh metacognitive review.");
+  if (!conclusion || conclusion.outcome === "NEED_INPUT") throw new Error("Root goal completion requires a final conclusion in the same review; missing input is not completion.");
+  assertGoalSatisfactionFacts(update);
+}
+
+export function assertSatisfiedRoot(root: Goal | undefined): asserts root is Goal {
+  if (root?.status !== "satisfied") throw new Error("Final completion requires the root goal G0 to be satisfied, not just an individual finding.");
+}
 
 /** Resolve declarations without mutating the board or reopening existing Goals.
  * Both preflight and Store use this rule so harmless repeats need no model repair. */

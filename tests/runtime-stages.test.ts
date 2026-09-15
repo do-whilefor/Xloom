@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AssistantMessageEventStream, type AssistantMessage, type Context, type Model } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, type AssistantMessage, type Context, type Model } from "@earendil-works/pi-ai";
 import { defaultConfig } from "../src/config.js";
 import { LoopController } from "../src/controller.js";
 import type { BlackboardContext, ContextStep } from "../src/loop/context.js";
@@ -67,12 +67,13 @@ function setup(respond: (run: SeenRun, context: Context, input: PromptData) => A
     return { model: { ...model, id: config.model }, secrets, streamFn: (_model, context) => {
       run.contexts.push(JSON.parse(JSON.stringify(context)) as Context);
       if (run.contexts.length > 10) throw new Error("Stage integration exceeded expected model turns");
-      const response = respond(run, context, promptData(context));
-      const events = new AssistantMessageEventStream();
+      const response = respond(run, context, promptData(context)), reason = response.stopReason;
+      if (reason === "pending") throw new Error("Synthetic fixture responses must finish the model turn");
+      const events = createAssistantMessageEventStream();
       queueMicrotask(() => {
         events.push({ type: "start", partial: response });
-        if (response.stopReason === "error" || response.stopReason === "aborted") events.push({ type: "error", reason: response.stopReason, error: response });
-        else events.push({ type: "done", reason: response.stopReason, message: response });
+        if (reason === "error" || reason === "aborted") events.push({ type: "error", reason, error: response });
+        else events.push({ type: "done", reason, message: response });
         events.end();
       });
       return events;
@@ -123,6 +124,45 @@ function seedFixtureGoals(test: ReturnType<typeof setup>): void {
 }
 
 describe("durable Execute checkpoints through the real Pi tool loop", () => {
+  it.each(["missing-conclusion", "need-input-with-root", "missing-root", "empty-root-facts"] as const)("repairs %s in the same Pi metacog run before committing completion", async invalid => {
+    const test = setup((run, context, input) => {
+      if (run.channel === "offline-execute") {
+        if (run.contexts.length === 1) return write("fixture-write", join(input.artifacts, "fixture.txt"), artifactBody);
+        return json({ summary: "Recorded the bounded synthetic comparison", result: "done",
+          evidence: [{ ref: "fixture", path: join(input.artifacts, "fixture.txt"), description: "Synthetic comparison original" }],
+          facts: [{ ref: "observed", description: "Synthetic comparison refutes the fixture hypothesis", evidenceRefs: ["fixture"] }],
+          findings: [{ key: "fixture-hypothesis", target: "local fixture", title: "Synthetic hypothesis", status: "lead", factRefs: ["observed"], evidenceRefs: ["fixture"], next: "Review the fixture bytes; reopen for a changed input" }] });
+      }
+      if (!input.blackboard.completedSteps) return planning(input);
+      const conclusion = { outcome: "NOT_REPRODUCED" as const, reason: "Synthetic local hypothesis checked; no live target tested" };
+      if (input.blackboard.projection.mode !== "metacog") return json({ summary: "Request a fresh final review", conclusion });
+      const updateGoals: Decision["updateGoals"] = [{ id: "G0", status: "satisfied", factIds: input.blackboard.facts.map(fact => fact.id), reason: "Bounded fixture comparison complete" }];
+      if (run.contexts.length === 1) {
+        const output: Decision = { summary: "Fresh review completed with archived comparison evidence",
+          reviews: input.blackboard.findings.map(finding => ({ findingId: finding.id, status: "closed", rating: "unrated", reason: "The archived comparison refutes this synthetic hypothesis; reopen with a different input" })),
+          ...(invalid !== "missing-root" ? { updateGoals: invalid === "empty-root-facts" ? [{ ...updateGoals[0]!, factIds: [] }] : updateGoals } : {}),
+          ...(invalid === "missing-root" || invalid === "empty-root-facts" ? { conclusion } : invalid === "need-input-with-root" ? { conclusion: { outcome: "NEED_INPUT", reason: "Contradictory completion proposal" } as const } : {}) };
+        return message([{ type: "toolCall", id: "invalid-completion", name: "submit", arguments: { output } }], "toolUse");
+      }
+      expect(run.contexts).toHaveLength(2);
+      expect(context.messages.at(-1)).toMatchObject({ role: "toolResult", toolCallId: "invalid-completion", isError: true });
+      expect(toolText(context)).toContain(invalid === "missing-root" ? "root goal G0 to be satisfied" : invalid === "empty-root-facts" ? "Satisfied goals require evidence-backed facts" : "final conclusion in the same review");
+      expect(toolText(context)).toContain("Rejected proposal retained in this run");
+      expect(test.controller.snapshot().goals[0]!.status).toBe("active");
+      const repairRoot = invalid === "missing-root" || invalid === "empty-root-facts";
+      return message([{ type: "toolCall", id: "repair-completion", name: "submit", arguments: { repair: [{
+        path: repairRoot ? "/updateGoals" : "/conclusion", value: repairRoot ? updateGoals : conclusion,
+      }] } }], "toolUse");
+    });
+    await test.controller.start();
+    expect(test.controller.snapshot()).toMatchObject({ status: "completed", outcome: "NOT_REPRODUCED", goals: [{ id: "G0", status: "satisfied" }] });
+    expect(test.store.runs().filter(run => run.mode === "metacog")).toEqual([expect.objectContaining({ status: "completed" })]);
+    const submissions = test.events.flatMap(event => event.runtime?.type === "tool_end" && event.runtime.toolName === "submit" ? [event.runtime] : []);
+    expect(submissions).toEqual([expect.objectContaining({ toolCallId: "invalid-completion", isError: true }), expect.objectContaining({ toolCallId: "repair-completion", isError: false })]);
+    expect(test.events.some(event => event.runtime?.type === "notice" && event.runtime.text.includes("tool-free repair"))).toBe(false);
+    assertExactUsage(test);
+  });
+
   it("expands deferred material cards with native read and commits their receipts with Decide", async () => {
     let expanded = false, extraPath = "";
     const test = setup((run, context, input) => {
