@@ -17,6 +17,7 @@ const cliFile = path.join(projectRoot, "src", "cli.ts");
 const tsxFile = path.join(projectRoot, "node_modules", "tsx", "dist", "cli.mjs");
 const roots: string[] = [];
 const missingKeyVariable = "XLOOM_CLI_TEST_MISSING_MODEL_CREDENTIAL_17";
+const cliProcessTimeoutMs = 20_000;
 
 it("lists tasks and current data paths without acquiring a writer or changing the board", () => {
   const root = workspace();
@@ -42,7 +43,7 @@ function workspace(): string {
 
 function cli(args: string[], cwd = workspace()) {
   const result = spawnSync(process.execPath, [tsxFile, cliFile, ...args], {
-    cwd, encoding: "utf8", timeout: 20_000, windowsHide: true,
+    cwd, encoding: "utf8", timeout: cliProcessTimeoutMs, windowsHide: true,
     env: { ...process.env, [missingKeyVariable]: "", NO_COLOR: "1", PI_CODING_AGENT_DIR: path.join(cwd, ".pi-test"), PI_OFFLINE: "1" },
     maxBuffer: 2 * 1024 * 1024,
   });
@@ -249,6 +250,7 @@ describe("command-line entry points", () => {
     expect(databaseState(root).board).toMatchObject({ config: { goal: config.goal }, facts: [], hints: [] });
   });
 
+  // Two sequential CLI processes need their own startup budgets, plus fixture I/O.
   it("fails without a model request when the named credential variable is missing", () => {
     const root = workspace();
     const config = defaultConfig("Missing-credential fixture");
@@ -275,7 +277,7 @@ describe("command-line entry points", () => {
     expect(currentTaskId(root)).not.toBe(firstId);
     expect(readSavedBoard(root, firstId)).toEqual(saved.board);
     expect(existsSync(path.join(projectDirectory(root), "controller.lock"))).toBe(false);
-  });
+  }, 2 * cliProcessTimeoutMs + 5_000);
 
   it("rejects status/report without creating an empty database", () => {
     const root = workspace();
