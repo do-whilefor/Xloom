@@ -7,6 +7,8 @@ import { createCheckedPowerShellOperations, createCheckedPowerShellTool, powerSh
 import { decidePrompt, executePrompt, metacogPrompt } from "../src/runtime/prompts.js";
 
 const directories: string[] = [];
+// Two sequential calls each allow 10 seconds, with 5 more for fixture I/O.
+const twoCallTestTimeoutMs = 2 * 10_000 + 5_000;
 afterEach(async () => {
   vi.restoreAllMocks();
   for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true });
@@ -142,6 +144,10 @@ describe.runIf(process.platform === "win32")("PowerShell syntax regressions on W
     const result = await tool.execute("expected-exit", { command: "$PSNativeCommandUseErrorActionPreference = $false; node -e 'process.exit(7)'; $observedExit = $LASTEXITCODE; if ($observedExit -ne 7) { exit 1 }; node -e 'process.exit(0)'; Write-Output 'HANDLED'", timeout: 10 });
     expect(result.content.filter(part => part.type === "text").map(part => part.text).join("")).toContain("HANDLED");
     await expect(tool.execute("next-call", { command: "node -e 'process.exit(7)'; node -e 'process.exit(0)'", timeout: 10 })).rejects.toThrow("unhandled errors=1");
+  }, twoCallTestTimeoutMs);
+
+  it("allows native failures explicitly caught by the caller", async () => {
+    const tool = createCheckedPowerShellTool(await workspace());
     const caught = await tool.execute("caught-exit", { command: "$ErrorActionPreference = 'Stop'; try { node -e 'process.exit(7)' } catch { Write-Output 'CAUGHT' }; node -e 'process.exit(0)'", timeout: 10 });
     expect(caught.content.filter(part => part.type === "text").map(part => part.text).join("")).toContain("CAUGHT");
   });
@@ -201,7 +207,7 @@ describe.runIf(process.platform === "win32")("PowerShell syntax regressions on W
     const corrected = await tool.execute("fixed-format", { command: "$items=[System.Collections.Generic.List[string]]::new(); $items.Add(('x={0}, y={1}' -f 1,2)); $items", timeout: 10 });
     expect(corrected.content.filter(part => part.type === "text").map(part => part.text).join("").trim()).toBe("x=1, y=2");
     expect((await readFile(join(directory, "once.txt"), "utf8")).trim()).toBe("once");
-  });
+  }, twoCallTestTimeoutMs);
 
   it("keeps the caller's environment, working directory and default preference scope", async () => {
     const directory = await workspace();
