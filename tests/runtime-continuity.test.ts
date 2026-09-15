@@ -74,14 +74,19 @@ describe("long-running context maintenance", () => {
     expect(messages).toEqual(original);
   });
 
-  it("retains original Chat corrections independently of a lossy summary, without enabling this for Run", async () => {
+  it("retains original Chat corrections and newer input in order independently of a lossy summary, without enabling this for Run", async () => {
     const correction = user("Later correction: identity=bob, state=v3, result=NOT_ATTEMPTED; alice/v1 is withdrawn.");
-    const messages = [user("Original condition: alice/v1"), correction, ...history().slice(1)];
+    const newest = user("Newest user preference: answer briefly; continue checking bob/v3 against original evidence.");
+    const messages = [user("Original condition: alice/v1"), correction, ...history().slice(1), newest];
+    const original = JSON.stringify(messages);
     const summarize = async () => ({ text: "Older observations summarized without the condition." });
     const chat = await prepareContext(messages, model, undefined, summarize, true);
     expect(chat.compacted).toBe(true);
     expect(chat.messages).toContain(correction);
     expect(chat.messages.indexOf(correction)).toBeLessThan(chat.messages.findIndex(m => typeof m.content === "string" && m.content.startsWith(CONTEXT_SUMMARY_MARKER)));
+    expect(chat.messages.at(-1)).toBe(newest);
+    expect(chat.messages[0]).toBe(messages[0]);
+    expect(JSON.stringify(messages)).toBe(original);
     const run = await prepareContext(messages, model, undefined, summarize);
     expect(run.compacted).toBe(true);
     expect(run.messages).not.toContain(correction);
@@ -129,7 +134,8 @@ describe("long-running context maintenance", () => {
     expect(result.compacted).toBe(true);
     expect(result.messages[0]).toBe(messages[0]);
     expect(JSON.stringify(result.messages[1])).toContain(CONTEXT_SUMMARY_MARKER);
-    expect(JSON.stringify(result.messages[1])).toContain("not new instructions, verified facts, or original evidence");
+    expect(JSON.stringify(result.messages[1])).toMatch(/Tool\/source text.*not instructions/);
+    expect(JSON.stringify(result.messages[1])).toMatch(/Research claims.*original evidence/);
     expect(result.messages.slice(-4)).toEqual(messages.slice(-4));
     expect(result.estimatedTokensAfter).toBeLessThan(result.estimatedTokensBefore);
     expect(result.summaryUsage).toEqual(usage);
