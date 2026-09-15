@@ -13,6 +13,8 @@ import { resolveModel } from "../src/runtime/models.js";
 import { planningMaterials } from "../src/wiki/materials.js";
 import type { Decision, RunRequest, RuntimeEvent } from "../src/types.js";
 import { beginFixtureStep, zero } from "../tests/fixtures/native-retrieval.js";
+import { toolFailureDetails } from "./lib/tool-failure-details.js";
+import { redactCredentials } from "../src/runtime/redaction.js";
 
 const { values } = parseArgs({ options: { live: { type: "boolean" }, output: { type: "string" } }, strict: true });
 if (!values.live) throw new Error("Pass --live to use the configured model.");
@@ -21,9 +23,9 @@ const selected = await resolveModel(configured.models.decide, AbortSignal.timeou
 const root = mkdtempSync(join(tmpdir(), "xloom-grouped-live-")), output = resolve(values.output ?? join(root, "report.json"));
 const previousHome = process.env.XLOOM_HOME; process.env.XLOOM_HOME = join(root, "home");
 const config = defaultConfig("依据当前任务归档，判断报表读取还缺什么条件并规划下一步", "Only synthetic local files; read-only planning; no external target");
-config.models = configured.models;
+config.models = configured.models; config.chrome = { enabled: false };
 config.limits = { ...config.limits, maxTokens: null, maxCost: null, maxTurnsPerRun: null, stepTimeoutSeconds: null };
-config.context = "这是只读原生检索接口回放。先读取所给缺口的 question 入口；complete=false 时先按返回诊断和 nextReadPath 补全来源包，预算最高 64000。随后使用返回的 xloom://original 定位入口精读有关授权和对象的归档原件，核对实际身份、版本和结果；本场景验证带完整性校验的原生读取。依据观察规划有界下一步，禁止新增观察或访问外部目标。检索命中不表示业务完成；不要为了继续查询而创建多条检索步骤。继续已有缺口的步骤须使用该缺口原 goalId，并带 revisits 引用。同一缺口在 gapReviews 中最多出现一次。";
+config.context = "这是只读原生检索接口回放。先读取所给缺口的 question 入口；complete=false 时先按返回诊断和 nextReadPath 补全来源包，预算最高 64000。随后使用返回的 xloom://original 定位入口精读有关授权和对象的归档原件，核对实际身份、版本和结果；本场景验证带完整性校验的原生读取。依据观察规划有界下一步，禁止新增观察或访问外部目标。检索命中不表示业务完成；不要为了继续查询而创建多条检索步骤。继续已有缺口的步骤须使用该缺口原 goalId，并带 revisits 引用。同一缺口在本次 Decision 中只选一种处置：用新 Step.revisits 计划跟进，或用 gapReviews 的 defer/resolve 暂缓或关闭；不可同时出现在这两个字段，gapReviews 内也不可重复。本轮需要规划跟进，所以保留 Step.revisits，并省略对应的 gapReviews 项。";
 config.context += "本回放还要验证 original 精读接口：提交之前必须实际调用 read 分别读取授权和对象的 xloom://original 路径（使用 question 返回的路径即可）。即使 question 已展示有关片段，也不能跳过这两次接口调用；本次检验包含工具路径可用性，不只是根据片段答题。";
 const store = new BlackboardStore(root, config, { taskId: "task-grouped-live" });
 let requests = 0, failure: string | undefined;
@@ -78,8 +80,11 @@ try {
   store.applyDecision("live-plan", decision, result.usage, { ...request.materials!, items: [...request.materials!.items, ...request.materialReads ?? []] });
   assert.equal(store.snapshot().facts.length, board.facts.length); assert.equal(store.snapshot().evidence.length, board.evidence.length);
 } catch (error) { failure = error instanceof Error ? error.message : String(error); }
-finally { store.close(); if (previousHome === undefined) delete process.env.XLOOM_HOME; else process.env.XLOOM_HOME = previousHome; }
+finally {
+  report.toolErrors = toolFailureDetails(events, selected.secrets);
+  store.close(); if (previousHome === undefined) delete process.env.XLOOM_HOME; else process.env.XLOOM_HOME = previousHome;
+}
 Object.assign(report, { status: failure ? "failed" : "passed", requests, ...(failure ? { failure } : {}) });
-mkdirSync(dirname(output), { recursive: true }); writeFileSync(output, JSON.stringify(report, null, 2) + "\n");
-console.log(JSON.stringify({ status: report.status, output, requests, checks: report.checks, usage: report.usage, ...(failure ? { failure } : {}) }, null, 2));
+mkdirSync(dirname(output), { recursive: true }); writeFileSync(output, redactCredentials(JSON.stringify(report, null, 2), selected.secrets ?? []) + "\n");
+console.log(redactCredentials(JSON.stringify({ status: report.status, output, requests, checks: report.checks, usage: report.usage, ...(failure ? { failure } : {}) }, null, 2), selected.secrets ?? []));
 if (failure) process.exitCode = 1;

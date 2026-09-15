@@ -100,6 +100,18 @@ describe("live native reading verification", () => {
     }
   });
 
+  it("requires every archive before and after new input, not just the new grant or one snippet", () => {
+    const grantBody = "downloadGrant=LOCAL_ONLY", grant = { ...evidence, id: "E2", path: "evidence/grant.bin", sha256: hash(grantBody), bytes: Buffer.byteLength(grantBody) };
+    const grantRead = native("decide", grantBody, 0, { locator: { evidenceId: grant.id, sha256: grant.sha256, byteOffset: 0, byteLength: grant.bytes } });
+    const check = (events: RuntimeEvent[], items = [evidence, grant]) => analyzeReadingOutcomes(events, items, root, root, { roles: ["decide"] }).nativeReadingByRequiredRoles;
+    expect(check([], [evidence])).toBe(false);
+    expect(check(native("decide"), [evidence])).toBe(true);
+    expect(check(grantRead)).toBe(false);
+    expect(check([...read("decide", join(root, evidence.path), body), ...grantRead])).toBe(false);
+    expect(check([...native("decide", "abc"), ...grantRead])).toBe(false);
+    expect(check([...native("decide"), ...grantRead])).toBe(true);
+  });
+
   it("provides the guided fixture's full source package and all archive locators at the stated budget", () => {
     const fixtureRoot = mkdtempSync(join(tmpdir(), "xloom-live-reading-contract-"));
     const fixture = wikiStructureFixture(fixtureRoot);

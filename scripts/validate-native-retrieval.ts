@@ -73,6 +73,7 @@ async function phase(id: string, hasProvider: boolean) {
       supplierMatchesState: hasProvider ? !!compatibleSupplier : !compatibleSupplier,
       planMatchesState: !!candidate && (hasProvider && !expectedReview.length ? candidate.plan?.requirementsCovered === true : candidate.plan === null),
       sourceReviewPreserved: !!candidate && expectedReview.every(issue => candidate.reviewIssues.includes(issue)),
+      allOriginalsRead: reading.nativeReadingByRequiredRoles,
       readVerifiedOriginal: !hasProvider || reads.some(call => call.path.startsWith("xloom://original?") && call.packet?.type === "original_read"
         && call.packet.integrity === "verified" && call.packet.text?.includes("LOCAL_ONLY")
         && reading.coverage[0]?.evidence.some(item => item.id === call.packet.locator?.evidenceId && item.nativeComplete)),
