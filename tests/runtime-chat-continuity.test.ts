@@ -233,6 +233,54 @@ describe("durable private chat", () => {
 });
 
 describe("chat context maintenance integration", () => {
+  it("carries the initial Chat goal and later correction through repeated summaries without pinning stale text or restoring it on restart", async () => {
+    const { input, directory } = await request();
+    input.chrome = { enabled: false };
+    const initial = "Original Chat objective: track fixture identity; initial condition MEMORY_OLD.";
+    const correction = "User correction: MEMORY_CURRENT replaces MEMORY_OLD. " + "inert data ".repeat(250);
+    const memory = "Goal: track fixture identity. User corrected MEMORY_OLD to MEMORY_CURRENT; research observations remain unverified.";
+    const noMeasuredUsage: Usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+    let summaries = 0, correctionSummarized = false, previousMemory = "";
+    const seen: Context[] = [];
+    const create = () => new ChatSession({ storageDirectory: join(directory, "chats"), resolveModel: async () => ({
+      model: { ...model, contextWindow: 12000, maxTokens: 3000 }, streamFn: stream(context => {
+        if (isSummary(context)) {
+          const transcript = JSON.stringify(context.messages);
+          if (summaries === 0) expect(transcript).toContain(initial);
+          else expect(transcript).toContain(previousMemory);
+          correctionSummarized ||= transcript.includes(correction);
+          previousMemory = correctionSummarized ? memory : "Goal: track fixture identity; original user condition MEMORY_OLD.";
+          summaries++;
+          return assistant([{ type: "text", text: previousMemory }], "stop", noMeasuredUsage);
+        }
+        seen.push(JSON.parse(JSON.stringify(context)) as Context);
+        return assistant([{ type: "text", text: "ACK" }], "stop", noMeasuredUsage);
+      }),
+    }) });
+    const first = create();
+    await first.send({ ...input, text: initial });
+    await first.send({ ...input, text: correction });
+    for (let turn = 0; turn < 20; turn++) await first.send({ ...input, text: `FILLER_${turn}\n` + "inert data ".repeat(250) });
+    expect(summaries).toBeGreaterThanOrEqual(2);
+    expect(correctionSummarized).toBe(true);
+    const last = seen.at(-1)!;
+    expect(last.messages.filter(message => typeof message.content === "string" && message.content.startsWith(CONTEXT_SUMMARY_MARKER))).toHaveLength(1);
+    expect(JSON.stringify(last.messages)).toContain(memory);
+    expect(last.messages.some(message => message.role === "user" && JSON.stringify(message.content).includes(initial))).toBe(false);
+    expect(JSON.stringify(last.messages.at(-1))).toContain("FILLER_19");
+    const archive = first.history().file!;
+    const archivedBytes = await readFile(archive, "utf8");
+    first.close();
+    const second = create();
+    await second.send({ ...input, text: "New launch, new conversation." });
+    expect(seen.at(-1)!.messages).toHaveLength(1);
+    expect(JSON.stringify(seen.at(-1)!.messages)).not.toMatch(/MEMORY_OLD|MEMORY_CURRENT|XLOOM PRIVATE CONTEXT SUMMARY/);
+    expect(second.history().file).not.toBe(archive);
+    expect(await readFile(archive, "utf8")).toBe(archivedBytes);
+    second.close();
+  });
+
   it("preserves corrections during compaction within a session and excludes both corrections and summaries after restart", async () => {
     const { input, directory } = await request();
     const correction = "Later user correction: bob / v3 / NOT_ATTEMPTED; previous alice / v1 withdrawn.";

@@ -142,7 +142,7 @@ export class ChatSession {
         // A summary is a real model call and can consume an explicitly configured
         // budget or receive cancellation before the next normal provider request.
         requireRequest();
-        if (prepared.compacted) emit({ type: "notice", mode: "chat", text: "Older private chat context was summarized. Recent tool results and the initial task are retained; the summary is not verified evidence." });
+        if (prepared.compacted) emit({ type: "notice", mode: "chat", text: "Older private chat context was summarized. Recent interactions are retained; older messages may remain only in the summary, which is not verified evidence." });
         return prepared.messages;
       };
       if (selected.costKnown === false) emit({ type: "notice", mode: "chat", text: "Endpoint pricing is unknown; cost is an estimate and a monetary budget cannot be enforced accurately." });

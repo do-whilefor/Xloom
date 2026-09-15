@@ -102,6 +102,27 @@ describe("long-running context maintenance", () => {
     expect(result.messages.filter(m => typeof m.content === "string" && m.content.startsWith(CONTEXT_SUMMARY_MARKER))).toHaveLength(1);
     expect(result.estimatedTokensAfter).toBeLessThan(model.contextWindow);
   });
+
+  it.each(["oversized-update", "combined-budget"])("does not pin stale initial Chat text past the historical user allowance (%s), but keeps Run's task", async boundary => {
+    const initial = user("Original Chat goal: track fixture identity; old condition alice/v1. " + "a".repeat(300));
+    const correction = user("User correction: current condition is bob/v3; alice/v1 withdrawn. " + "b".repeat(boundary === "oversized-update" ? 1000 : 450));
+    const newest = user("Newest request: continue checking the current condition.");
+    const messages = [initial, correction, ...history().slice(1), newest];
+    const before = JSON.stringify(messages);
+    const summarize = vi.fn(async (_messages: AgentMessage[]) => ({ text: "Goal: track fixture identity. User corrected alice/v1 to bob/v3; observations still need original evidence." }));
+    const chat = await prepareContext(messages, model, undefined, summarize, true);
+    expect(chat.compacted).toBe(true);
+    expect(chat.messages).not.toContain(initial);
+    expect(chat.messages.includes(correction)).toBe(boundary === "combined-budget");
+    expect(chat.messages.at(-1)).toBe(newest);
+    expect(summarize.mock.calls[0][0].slice(0, 2)).toEqual([initial, correction]);
+    expect(chat.messages.filter(message => typeof message.content === "string" && message.content.startsWith(CONTEXT_SUMMARY_MARKER))).toHaveLength(1);
+    const run = await prepareContext(messages, model, undefined, summarize);
+    expect(run.compacted).toBe(true);
+    expect(run.messages[0]).toBe(initial);
+    expect(summarize.mock.calls[1][0][0]).toBe(correction);
+    expect(JSON.stringify(messages)).toBe(before);
+  });
   it("does not summarize below model capacity pressure", async () => {
     const summarize = vi.fn();
     const messages = [user(), ...batch("small", "short")];
