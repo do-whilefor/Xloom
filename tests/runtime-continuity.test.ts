@@ -239,6 +239,28 @@ describe("summary provider calls", () => {
     expect(counted).toHaveBeenCalledExactlyOnceWith(usage);
   });
 
+  it("summarizes user corrections and public tool records without promoting private thinking into conversation history", async () => {
+    const corrected = "User correction: current condition is bob/v3; alice/v1 is withdrawn.";
+    const messages = [user("Original condition: alice/v1"), user(corrected),
+      assistant([{ type: "thinking", thinking: "PRIVATE_CONFLICT: alice/v1 is still current despite the user's correction.", thinkingSignature: "PRIVATE_THINKING_SIGNATURE" },
+        { type: "text", text: "Acknowledged the corrected condition.", textSignature: "PRIVATE_TEXT_SIGNATURE" },
+        { type: "toolCall", id: "verified-read", name: "read", arguments: { path: "evidence/correction.txt" }, thoughtSignature: "PRIVATE_TOOL_SIGNATURE" }], "toolUse"),
+      { role: "toolResult" as const, toolCallId: "verified-read", toolName: "read", content: [{ type: "text" as const, text: "Observed bob/v3 in the source." }], isError: false, timestamp: 0 }];
+    const before = structuredClone(messages);
+    const summarize = createContextSummarizer(stream(assistant([{ type: "text", text: "The user corrected alice/v1 to bob/v3; source read completed." }]), (_options, context) => {
+      const transcript = JSON.stringify(context);
+      expect(transcript).not.toContain("PRIVATE_");
+      expect(transcript).not.toContain("[Assistant thinking]");
+      expect(transcript).toContain(corrected);
+      expect(transcript).toContain("Acknowledged the corrected condition.");
+      expect(transcript).toContain("evidence/correction.txt");
+      expect(transcript).toContain("Observed bob/v3 in the source.");
+      expect(transcript.indexOf("Original condition: alice/v1")).toBeLessThan(transcript.indexOf(corrected));
+    }), () => {});
+    await summarize(messages, model);
+    expect(messages).toEqual(before);
+  });
+
   it.each(["error", "aborted", "length", "toolUse"] as const)("counts %s summary usage but never persists its incomplete output", async stopReason => {
     const counted = vi.fn();
     const summarize = createContextSummarizer(stream(assistant([{ type: "text", text: "partial" }], stopReason)), counted);

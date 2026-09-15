@@ -238,9 +238,14 @@ describe("chat context maintenance integration", () => {
     const correction = "Later user correction: bob / v3 / NOT_ATTEMPTED; previous alice / v1 withdrawn.";
     let summaries = 0; const seen: Context[] = [];
     const create = () => new ChatSession({ storageDirectory: join(directory, "chats"), resolveModel: async () => ({ model, streamFn: stream(context => {
-      if (isSummary(context)) { summaries++; return assistant([{ type: "text", text: "Older observations summarized; original conditions not restated here." }]); }
+      if (isSummary(context)) {
+        expect(JSON.stringify(context.messages)).not.toContain("PRIVATE_CONFLICT");
+        expect(JSON.stringify(context.messages)).not.toContain("[Assistant thinking]");
+        summaries++; return assistant([{ type: "text", text: "Older observations summarized; original conditions not restated here." }]);
+      }
       seen.push(JSON.parse(JSON.stringify(context)) as Context);
-      return assistant([{ type: "text", text: "retained observation ".repeat(700) }]);
+      return assistant([{ type: "thinking", thinking: "PRIVATE_CONFLICT: alice/v1 is current despite the later user correction." },
+        { type: "text", text: "retained observation ".repeat(700) }]);
     }) }) });
     const first = create();
     await first.send({ ...input, text: "Initial user condition: alice / v1 / DENIED" });
