@@ -217,9 +217,11 @@ export class AppController {
     this.displayRequest?.abort();
     this.cancellation?.abort();
     this.closing = Promise.resolve().then(async () => {
-      // Closing an idle app must retain the saved pause/error diagnosis. Only
-      // an in-flight operation needs a stop; otherwise shutdown rewrites history.
-      try { if (this.active) this.stop(); await this.waitForIdle(); }
+      // Chat and settings cancellation must retain an idle task's diagnosis.
+      try {
+        if (this.active && this.mode === "run" && this.store?.snapshot().status === "running") this.stop();
+        await this.waitForIdle();
+      }
       finally {
         try { if (this.chatSession.close) this.chatSession.close(); else this.chatSession.reset(); this.detachLoop?.(); this.store?.close(); }
         finally { this.lock.close(); }

@@ -73,12 +73,16 @@ describe("saved task navigation", () => {
     expect(reopened.snapshot()).toEqual(before);
   });
 
-  it("still cancels and saves an active Run when closing", async () => {
+  it.each(["run", "manual-meta"])("still cancels and saves active %s work when closing", async mode => {
     const test = setup(), started = Promise.withResolvers<void>();
+    if (mode === "manual-meta") await test.app.runGoal("Pause before a manual review");
     test.runner.run.mockImplementation(request => new Promise((_resolve, reject) => {
       started.resolve(); request.signal.addEventListener("abort", () => reject(new Error("Synthetic stopped request")), { once: true });
     }));
-    const running = test.app.runGoal("Interrupt active fixture"); await started.promise;
+    let running: Promise<void>;
+    if (mode === "manual-meta") { test.app.requestMetacog(); running = test.app.waitForIdle(); }
+    else running = test.app.runGoal("Interrupt active fixture");
+    await started.promise;
     await test.app.close(); await running;
     expect(readSavedBoard(test.root).status).toBe("stopped");
     expect(existsSync(workspaceLockPath(test.root))).toBe(false);
@@ -586,14 +590,51 @@ describe("application model settings", () => {
 });
 
 describe("workspace ownership", () => {
+  for (const status of ["paused", "error"] as const) {
+    it.each(["model", "apikey", "login", "logout"] as const)(`closes a pending %s setting without overwriting the task's ${status} diagnosis`, async kind => {
+      const test = setup();
+      if (status === "error") test.runner.run.mockRejectedValue(new Error("Synthetic original task failure"));
+      await test.app.runGoal("Preserve the task while cancelling a setting");
+      const before = test.app.snapshot(), started = Promise.withResolvers<AbortSignal | undefined>(), release = Promise.withResolvers<void>();
+      const configure = async (signal?: AbortSignal) => { started.resolve(signal); await release.promise; signal?.throwIfAborted(); };
+      test.settings.listModels.mockImplementation(async () => { await configure(); return [{ provider: "fixture", model: "model-a", name: "Model A" }]; });
+      test.settings.saveApiKey.mockImplementation((_provider, _key, signal) => configure(signal));
+      test.settings.login.mockImplementation((_provider, interaction) => configure(interaction.signal));
+      test.settings.logout.mockImplementation((_provider, signal) => configure(signal));
+      const pending = kind === "model" ? test.app.selectModel("fixture", "model-a")
+        : kind === "apikey" ? test.app.saveApiKey("fixture", "synthetic-key")
+        : kind === "login" ? test.app.login("fixture", { notify() {}, async prompt() { return "synthetic-answer"; } }) : test.app.logout("fixture");
+      const settled = expect(pending).rejects.toThrow();
+      const signal = await started.promise;
+      const closing = test.app.close();
+      let closed = false; void closing.then(() => { closed = true; });
+      await Promise.resolve();
+      const closedBeforeRelease = closed;
+      release.resolve(); await settled; await closing;
+      expect(closedBeforeRelease).toBe(false);
+      if (kind !== "model") expect(signal?.aborted).toBe(true);
+      expect(before.status).toBe(status);
+      expect(readSavedBoard(test.root)).toEqual(before);
+      expect(existsSync(workspaceLockPath(test.root))).toBe(false);
+      const reopened = new AppController(test.root, test.configPath, test.config, { chat: test.chat, settings: test.settings, runner: test.runner }); apps.push(reopened);
+      expect(reopened.getSessionInfo()).toMatchObject({ mode: "chat", busy: false, status: "idle", usage: { input: 0, output: 0, cost: 0 } });
+      expect(reopened.snapshot()).toMatchObject({ facts: [], steps: [], hints: [] });
+      expect(reopened.storagePaths().task).toBeUndefined();
+    });
+  }
+
   it("concurrent close callers wait for the same cleanup and cannot start new work", async () => {
     let release!: () => void;
-    const test = setup({ chat: { reset: vi.fn(), send: () => new Promise(resolve => { release = () => resolve(usage); }) } });
+    let signal: AbortSignal | undefined;
+    const test = setup({ chat: { reset: vi.fn(), send: request => new Promise(resolve => { signal = request.signal; release = () => resolve(usage); }) } });
+    await test.app.runGoal("Preserve this task while closing an active chat");
+    const before = test.app.snapshot();
     const running = test.app.chat("pending fixture");
     await Promise.resolve();
     const first = test.app.close();
     const second = test.app.close();
     expect(second).toBe(first);
+    expect(signal?.aborted).toBe(true);
     let closed = false;
     void first.then(() => { closed = true; });
     await Promise.resolve();
@@ -602,6 +643,7 @@ describe("workspace ownership", () => {
     release(); await running; await Promise.all([first, second]);
     expect(closed).toBe(true);
     expect(existsSync(workspaceLockPath(test.root))).toBe(false);
+    expect(readSavedBoard(test.root)).toEqual(before);
   });
 
   it("keeps one live application per workspace and releases its own lock", async () => {
