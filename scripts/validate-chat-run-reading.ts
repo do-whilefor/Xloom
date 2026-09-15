@@ -16,6 +16,7 @@ import { wikiStructureFixture } from "../tests/fixtures/wiki-structure.js";
 import { wikiIssues } from "../src/wiki/model.js";
 import { analyzeToolOutcomes } from "./lib/tool-outcomes.js";
 import { analyzeReadingOutcomes } from "./lib/reading-outcomes.js";
+import { freshSessionChecks } from "./lib/live-session-validation.js";
 
 const { values } = parseArgs({ options: { live: { type: "boolean" }, output: { type: "string" } }, strict: true });
 if (!values.live) throw new Error("Pass --live to call configured models.");
@@ -26,7 +27,7 @@ for (const config of models) if (!selected.has(JSON.stringify(config))) selected
 const root = mkdtempSync(join(tmpdir(), "xloom-modes-live-")), output = resolve(values.output ?? join(root, "report.json"));
 const oldHome = process.env.XLOOM_HOME; process.env.XLOOM_HOME = join(root, "home");
 const workspace = join(root, "workspace"); mkdirSync(workspace); ensureProject(workspace);
-const config = defaultConfig("Chat and Run synthetic integration"); config.models = configured.models;
+const config = defaultConfig("Chat and Run synthetic integration"); config.models = configured.models; config.chrome = { enabled: false };
 // No monetary/token/request caps. Timeouts detect a stuck test, not affordability.
 config.limits = { ...config.limits, maxCost: null, maxTokens: null, maxTurnsPerRun: null, maxMinutes: 20, stepTimeoutSeconds: 240, metacogEvery: 3 };
 const configFile = projectConfigPath(workspace); saveConfig(configFile, config);
@@ -40,8 +41,10 @@ const resolver: ModelResolver = async (model: ModelConfig) => {
   return { ...provider, streamFn: (model, context, options) => {
     requests++;
     const privateLeak = role !== "chat" && JSON.stringify(context).includes(privateMarker);
-    calls.push({ phase: phaseId, role, model: model.id, messages: context.messages.length, tools: context.tools?.map(tool => tool.name), privateLeak });
+    const previousChatLeak = phaseId === "chat-fresh-after-restart" && [privateMarker, "CHAT_TOOL_TWO"].some(marker => JSON.stringify(context).includes(marker));
+    calls.push({ phase: phaseId, role, model: model.id, messages: context.messages.length, tools: context.tools?.map(tool => tool.name), privateLeak, previousChatLeak });
     assert(!privateLeak, "Private Chat content leaked into Run");
+    assert(!previousChatLeak, "Previous Chat content leaked into the restarted session");
     return provider.streamFn(model, context, options);
   } };
 };
@@ -64,6 +67,7 @@ async function phase(id: string, body: (entry: Record<string, any>, eventStart: 
   const timeout = setTimeout(() => { entry.watchdogTriggered = true; app?.pause(); }, 900000);
   try {
     await body(entry, start);
+    entry.checks.watchdogNotTriggered = !entry.watchdogTriggered;
     entry.toolOutcomes = analyzeToolOutcomes(events.slice(start));
     if (id.startsWith("run-")) entry.checks.noUnrecoveredToolErrors = entry.toolOutcomes.unrecoveredErrors === 0;
     assert(Object.values(entry.checks).every(Boolean), `Failed checks: ${JSON.stringify(entry.checks)}`); entry.status = "passed";
@@ -97,12 +101,15 @@ try {
   });
   const oldChat = app.chatHistory()!.file!;
   await app.close(); app = open();
-  await phase("chat-restore", async (entry, start) => {
+  await phase("chat-fresh-after-restart", async (entry, start) => {
+    const initial = freshSessionChecks(app!);
+    assert(Object.values(initial).every(Boolean), `Restart did not start a fresh session: ${JSON.stringify(initial)}`);
     activeRole = "chat";
-    await app!.chat("继续上轮。只回答先前的私有聊天标记和文件最终内容；不要调用工具或重做文件操作。");
-    entry.reply = finalChat(); entry.checks = { remembered: entry.reply.includes(privateMarker) && entry.reply.includes("CHAT_TOOL_TWO"),
-      sameArchive: app!.chatHistory()!.file === oldChat, noReplay: toolStarts(runtime(start)).length === 0,
-      noResearchState: app!.snapshot().facts.length === 0 };
+    await app!.chat("只根据当前会话回答先前的私有聊天标记和文件最终内容；若当前会话没有这些信息，只回复 NO_PRIOR_CONTEXT。不要调用工具或重做文件操作。");
+    entry.reply = finalChat(); entry.checks = { ...initial, noInventedHistory: entry.reply.includes("NO_PRIOR_CONTEXT"),
+      oldPrivateContextAbsent: ![privateMarker, "CHAT_TOOL_TWO"].some(marker => JSON.stringify(app!.chatHistory()!.messages).includes(marker)),
+      newArchive: !!app!.chatHistory()!.file && app!.chatHistory()!.file !== oldChat, oldArchivePreserved: existsSync(oldChat),
+      noReplay: toolStarts(runtime(start)).length === 0 };
   });
   await phase("chat-native-exit-diagnostics", async (entry, start) => {
     activeRole = "chat";
@@ -160,7 +167,7 @@ try {
   nativeConfig.goal = "核对本地合成报表观察的原件与更正；未验证下载成功";
   nativeConfig.context = "本段专测原生检索接口，仅核对当前合成研究材料。Decide 和 Execute 各自先调用 read，path=xloom://search?mode=wiki&query=BridgeAlias&budgetChars=64000；取得 complete=true 的完整来源包后沿 evidence.originalReadPath 精读全部原件与更正。文件路径直读虽能读取内容，但不满足本段原生接口测试；本段不要打开 Wiki index/pages/record，所需记录由来源包提供。Decide 安排一个 Execute 做同样的原生搜索、原件核对和 WK-flow 元数据维护，并在 Step 中写明上述入口和读取约束（仅 aliases 增加 InspectedBridge，省略 blocks）。不添加新 Fact/Evidence/Finding，核对日志不是新观察。不执行任何下载，不复核旧解释，不结束根目标。Execute 后 Decide 基于现有资料说明剩余缺口并不再安排动作。用现有 read；不访问外部目标。";
   const fixture = wikiStructureFixture(workspace, nativeConfig); fixture.correct(); fixture.store.setStatus("paused", "Synthetic native review replay"); fixture.store.close(); selectTask(workspace, null);
-  app = open();
+  app = open(); app.openTask("@legacy");
   await phase("run-original-reading", async (entry, start) => {
     const before = app!.snapshot();
     entry.before = before;
@@ -173,7 +180,7 @@ try {
     const page = board.wikiPages!.find(page => page.id === "WK-flow")!, oldPage = before.wikiPages!.find(page => page.id === "WK-flow")!;
     entry.readCalls = readCalls; entry.board = board; entry.originalRanges = originals.map(result => ({
       mode: seen.find(event => event.toolCallId === result.toolCallId)?.mode, locator: result.locator, reading: result.reading }));
-    entry.checks = { nativeSearchByBothRoles: reading.nativeSearchByBothRoles, originalReadingByBothRoles: reading.nativeReadingByBothRoles,
+    entry.checks = { nativeSearchByBothRoles: reading.nativeSearchByRequiredRoles, originalReadingByBothRoles: reading.nativeReadingByRequiredRoles,
       correctionRead: originals.some(result => result.text.includes("v1 observation withdrawn")),
       metadataCommitted: !!board.wikiPages?.find(page => page.id === "WK-flow")?.aliases?.includes("InspectedBridge"),
       noNewObservations: JSON.stringify([board.evidence, board.facts, board.findings]) === JSON.stringify([before.evidence, before.facts, before.findings]),
@@ -185,7 +192,10 @@ try {
   });
   await phase("idle-run-restart", async entry => {
     const before = app!.snapshot(); await app!.close(); app = open();
-    entry.checks = { preservedDiagnosis: JSON.stringify(app.snapshot()) === JSON.stringify(before), idle: !app.getSessionInfo().busy };
+    const fresh = freshSessionChecks(app);
+    assert(Object.values(fresh).every(Boolean), `Restart unexpectedly restored state: ${JSON.stringify(fresh)}`);
+    app.openTask("@legacy");
+    entry.checks = { ...fresh, preservedDiagnosis: JSON.stringify(app.snapshot()) === JSON.stringify(before), idle: !app.getSessionInfo().busy };
   });
   await phase("mode-switch-and-reopen-completed", async (entry, start) => {
     const before = app!.snapshot(); activeRole = "chat";

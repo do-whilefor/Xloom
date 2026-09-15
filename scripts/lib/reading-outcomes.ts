@@ -6,12 +6,10 @@ import type { Evidence, RuntimeEvent } from "../../src/types.js";
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 const parse = (text: string): any => { try { return JSON.parse(text); } catch { return undefined; } };
 
-/** Delivery diagnostics for the guided replay. Filesystem delivery is reported
- * separately and never satisfies the native-interface benchmark. */
-export function analyzeReadingOutcomes(events: readonly RuntimeEvent[], evidence: readonly Evidence[], taskDir: string, workspace: string) {
+/** Only a successful read paired with its own call can establish a native route. */
+export function successfulReadCalls(events: readonly RuntimeEvent[]) {
   const starts = new Map<string, RuntimeEvent>();
-  const deliveries: { mode: RuntimeEvent["mode"]; evidenceId: string; route: "native" | "file"; start: number; end: number }[] = [];
-  const nativeSearchRoles = new Set<RuntimeEvent["mode"]>();
+  const calls: { mode: RuntimeEvent["mode"]; path: string; text: string; packet: any }[] = [];
   for (const event of events) {
     if (!event.toolCallId || event.toolName !== "read") continue;
     const key = JSON.stringify([event.mode, event.toolCallId]);
@@ -19,10 +17,21 @@ export function analyzeReadingOutcomes(events: readonly RuntimeEvent[], evidence
     if (event.type !== "tool_end") continue;
     const call = starts.get(key); starts.delete(key);
     const path = call && parse(call.text)?.path;
-    if (event.isError || typeof path !== "string") continue;
-    const packet = parse(event.text);
-    if (path.startsWith("xloom://search?") && packet?.type === "task_search" && packet.mode === "wiki" && packet.complete === true
-      && packet.query === "BridgeAlias" && packet.wiki?.records?.length) nativeSearchRoles.add(event.mode);
+    if (!event.isError && typeof path === "string") calls.push({ mode: event.mode, path, text: event.text, packet: parse(event.text) });
+  }
+  return calls;
+}
+
+/** Delivery diagnostics for the guided replay. Filesystem delivery is reported
+ * separately and never satisfies the native-interface benchmark. */
+export function analyzeReadingOutcomes(events: readonly RuntimeEvent[], evidence: readonly Evidence[], taskDir: string, workspace: string,
+  options: { roles?: readonly RuntimeEvent["mode"][]; query?: string; searchModes?: readonly string[] } = {}) {
+  const deliveries: { mode: RuntimeEvent["mode"]; evidenceId: string; route: "native" | "file"; start: number; end: number }[] = [];
+  const nativeSearchRoles = new Set<RuntimeEvent["mode"]>();
+  for (const event of successfulReadCalls(events)) {
+    const { path, packet } = event;
+    if (path.startsWith("xloom://search?") && packet?.type === "task_search" && (options.searchModes ?? ["wiki"]).includes(packet.mode) && packet.complete === true
+      && packet.query === (options.query ?? "BridgeAlias") && packet.wiki?.records?.length) nativeSearchRoles.add(event.mode);
     for (const item of evidence) {
       const loc = packet?.locator;
       if (path.startsWith("xloom://original?") && packet?.type === "original_read" && packet.integrity === "verified"
@@ -36,7 +45,7 @@ export function analyzeReadingOutcomes(events: readonly RuntimeEvent[], evidence
       }
     }
   }
-  const coverage = (["decide", "execute"] as const).map(mode => ({ mode, nativeSearch: nativeSearchRoles.has(mode),
+  const coverage = (options.roles ?? ["decide", "execute"] as const).map(mode => ({ mode, nativeSearch: nativeSearchRoles.has(mode),
     evidence: evidence.map(item => {
       const ranges = deliveries.filter(value => value.mode === mode && value.evidenceId === item.id);
       let end = 0;
@@ -46,7 +55,7 @@ export function analyzeReadingOutcomes(events: readonly RuntimeEvent[], evidence
     }),
   }));
   return { coverage, deliveries,
-    nativeSearchByBothRoles: coverage.every(role => role.nativeSearch),
-    nativeReadingByBothRoles: evidence.length > 0 && coverage.every(role => role.evidence.every(item => item.nativeComplete)),
-    originalDeliveryByBothRoles: evidence.length > 0 && coverage.every(role => role.evidence.every(item => item.nativeComplete || item.fileComplete)) };
+    nativeSearchByRequiredRoles: coverage.length > 0 && coverage.every(role => role.nativeSearch),
+    nativeReadingByRequiredRoles: coverage.length > 0 && evidence.length > 0 && coverage.every(role => role.evidence.every(item => item.nativeComplete)),
+    originalDeliveryByRequiredRoles: coverage.length > 0 && evidence.length > 0 && coverage.every(role => role.evidence.every(item => item.nativeComplete || item.fileComplete)) };
 }

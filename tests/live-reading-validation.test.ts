@@ -1,10 +1,16 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { describe, expect, it } from "vitest";
-import { analyzeReadingOutcomes } from "../scripts/lib/reading-outcomes.js";
-import { searchTask } from "../src/wiki/query.js";
+import { describe, expect, it, vi } from "vitest";
+import { analyzeReadingOutcomes, successfulReadCalls } from "../scripts/lib/reading-outcomes.js";
+import { freshSessionChecks } from "../scripts/lib/live-session-validation.js";
+import { AppController } from "../src/app.js";
+import { defaultConfig } from "../src/config.js";
+import { projectConfigPath } from "../src/paths.js";
+import { selectTask } from "../src/workspace.js";
+import { readDiscovery, searchTask } from "../src/wiki/query.js";
+import { nativeFixture } from "./fixtures/native-retrieval.js";
 import { wikiStructureFixture } from "./fixtures/wiki-structure.js";
 import type { Evidence, RuntimeEvent } from "../src/types.js";
 
@@ -25,15 +31,15 @@ const analyze = (events: RuntimeEvent[]) => analyzeReadingOutcomes(events, [evid
 describe("live native reading verification", () => {
   it("distinguishes fully delivered file bytes from the required native route", () => {
     const result = analyze([...read("decide", join(root, evidence.path), body), ...native("execute")]);
-    expect(result.originalDeliveryByBothRoles).toBe(true);
-    expect(result.nativeReadingByBothRoles).toBe(false);
+    expect(result.originalDeliveryByRequiredRoles).toBe(true);
+    expect(result.nativeReadingByRequiredRoles).toBe(false);
     expect(result.coverage[0].evidence[0]).toMatchObject({ fileComplete: true, nativeComplete: false });
   });
 
   it("joins byte ranges out of order and allows overlap, but not gaps or another role's bytes", () => {
-    expect(analyze([...native("decide", "更正", 3), ...native("decide", "abc"), ...native("decide", "bc", 1), ...native("execute")]).nativeReadingByBothRoles).toBe(true);
-    expect(analyze([...native("decide", "ab"), ...native("decide", "更正", 3), ...native("execute")]).nativeReadingByBothRoles).toBe(false);
-    expect(analyze([...native("decide", "abc"), ...native("execute", "更正", 3)]).nativeReadingByBothRoles).toBe(false);
+    expect(analyze([...native("decide", "更正", 3), ...native("decide", "abc"), ...native("decide", "bc", 1), ...native("execute")]).nativeReadingByRequiredRoles).toBe(true);
+    expect(analyze([...native("decide", "ab"), ...native("decide", "更正", 3), ...native("execute")]).nativeReadingByRequiredRoles).toBe(false);
+    expect(analyze([...native("decide", "abc"), ...native("execute", "更正", 3)]).nativeReadingByRequiredRoles).toBe(false);
   });
 
   it("requires successful paired read events in the same role", () => {
@@ -58,15 +64,40 @@ describe("live native reading verification", () => {
       read("decide", join(root, evidence.path), body, true), read("decide", evidence.path, body)]) {
       expect(analyze(events).deliveries).toHaveLength(0);
     }
-    expect(analyzeReadingOutcomes([], [], root, root).nativeReadingByBothRoles).toBe(false);
+    expect(analyzeReadingOutcomes([], [], root, root).nativeReadingByRequiredRoles).toBe(false);
   });
 
   it("requires a completed native Wiki search for each role, independently of original reading", () => {
     const packet = { type: "task_search", mode: "wiki", query: "BridgeAlias", complete: true, wiki: { records: [{ id: "source" }] } };
     const search = (mode: RuntimeEvent["mode"], complete: boolean) => read(mode, "xloom://search?mode=wiki&query=BridgeAlias", JSON.stringify({ ...packet, complete }));
-    expect(analyze([...search("decide", true), ...search("execute", false)]).nativeSearchByBothRoles).toBe(false);
-    expect(analyze([...search("decide", true), ...search("execute", true)]).nativeSearchByBothRoles).toBe(true);
-    expect(analyze([...native("decide"), ...native("execute")]).nativeSearchByBothRoles).toBe(false);
+    expect(analyze([...search("decide", true), ...search("execute", false)]).nativeSearchByRequiredRoles).toBe(false);
+    expect(analyze([...search("decide", true), ...search("execute", true)]).nativeSearchByRequiredRoles).toBe(true);
+    expect(analyze([...native("decide"), ...native("execute")]).nativeSearchByRequiredRoles).toBe(false);
+  });
+
+  it("keeps native Decide-only diagnostics strict when a model reads files or skips search", () => {
+    const options = { roles: ["decide"] as const, query: "BridgeNote", searchModes: ["wiki", "combined"] };
+    const packet = { type: "task_search", mode: "combined", query: "BridgeNote", complete: true, wiki: { records: [{ ref: { kind: "block" } }] } };
+    const search = read("decide", "xloom://search?mode=combined&query=BridgeNote", JSON.stringify(packet));
+    const check = (events: RuntimeEvent[]) => analyzeReadingOutcomes(events, [evidence], root, root, options);
+    expect(check([...search, ...native("decide")])).toMatchObject({ nativeSearchByRequiredRoles: true, nativeReadingByRequiredRoles: true });
+    expect(check([...search, ...read("decide", join(root, evidence.path), body)])).toMatchObject({ nativeSearchByRequiredRoles: true,
+      nativeReadingByRequiredRoles: false, originalDeliveryByRequiredRoles: true });
+    expect(check(native("decide"))).toMatchObject({ nativeSearchByRequiredRoles: false, nativeReadingByRequiredRoles: true });
+    expect(check(read("decide", join(root, "saved-search.json"), JSON.stringify(packet))).nativeSearchByRequiredRoles).toBe(false);
+    expect(check([search[1]]).nativeSearchByRequiredRoles).toBe(false);
+    expect(check(read("decide", "xloom://search?mode=combined&query=Other", JSON.stringify({ ...packet, query: "Other" }))).nativeSearchByRequiredRoles).toBe(false);
+    expect(analyzeReadingOutcomes([], [evidence], root, root, { roles: [] }).nativeReadingByRequiredRoles).toBe(false);
+  });
+
+  it("pairs discovery responses with successful same-role read calls", () => {
+    const packet = { type: "discovery_context", consumerId: "C-download", complete: true };
+    const events = read("decide", "xloom://discover?consumerId=C-download", JSON.stringify(packet));
+    expect(successfulReadCalls(events)).toEqual([{ mode: "decide", path: "xloom://discover?consumerId=C-download", text: JSON.stringify(packet), packet }]);
+    for (const altered of [[events[1]], [events[0], { ...events[1], isError: true }],
+      [events[0], { ...events[1], mode: "execute" as const }], [events[0], { ...events[1], toolCallId: "other" }]]) {
+      expect(successfulReadCalls(altered)).toEqual([]);
+    }
   });
 
   it("provides the guided fixture's full source package and all archive locators at the stated budget", () => {
@@ -81,6 +112,50 @@ describe("live native reading verification", () => {
       expect(json).toContain("originalReadPath");
       expect(json).toContain("WK-flow");
       expect(json).toContain("aliases");
-    } finally { fixture.store.close(); }
+    } finally { fixture.store.close(); rmSync(fixtureRoot, { recursive: true, force: true }); }
+  });
+
+  it("delivers native smoke source and discovery packets at the exact guided budget before and after new input", () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "xloom-native-reading-contract-"));
+    const fixture = nativeFixture(fixtureRoot);
+    try {
+      for (const hasProvider of [false, true]) {
+        if (hasProvider) fixture.addProvider();
+        const board = fixture.store.snapshot();
+        const search = searchTask(board, fixture.store.dataDir, fixtureRoot, "BridgeNote", { mode: "combined", budgetChars: 64000 });
+        const discovery = readDiscovery(board, fixture.store.dataDir, fixtureRoot, { consumerId: "C-download", budgetChars: 64000 });
+        expect(search.complete).toBe(true); expect(discovery.complete).toBe(true);
+        const json = JSON.stringify([search, discovery]);
+        expect(json).toContain("originalReadPath");
+        for (const item of board.evidence) { expect(json).toContain(item.id); expect(json).toContain(item.sha256); }
+        if (hasProvider) { expect(json).toContain("review_required"); expect(json).toContain("C-grant"); }
+      }
+    } finally { fixture.store.close(); rmSync(fixtureRoot, { recursive: true, force: true }); }
+  });
+});
+
+describe("live replay session isolation contract", () => {
+  it("starts empty, requires explicit legacy selection, and preserves saved diagnosis after closing", async () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "xloom-live-session-contract-"));
+    const config = defaultConfig("Isolated live replay"); config.chrome = { enabled: false };
+    const fixture = wikiStructureFixture(fixtureRoot, config); fixture.correct();
+    fixture.store.setStatus("paused", "Original synthetic diagnostic"); fixture.store.close(); selectTask(fixtureRoot, null);
+    const run = vi.fn(async () => { throw new Error("Explicit selection must not run a model"); });
+    const open = () => new AppController(fixtureRoot, projectConfigPath(fixtureRoot), config, { runner: { run } });
+    let app = open();
+    try {
+      expect(Object.values(freshSessionChecks(app)).every(Boolean)).toBe(true);
+      app.openTask("@legacy");
+      const before = app.snapshot();
+      expect(freshSessionChecks(app)).toMatchObject({ freshChat: false, noSelectedTask: false, noResearchContext: false });
+      await app.close(); app = open();
+      expect(Object.values(freshSessionChecks(app)).every(Boolean)).toBe(true);
+      app.openTask("@legacy");
+      expect(app.snapshot()).toEqual(before);
+      expect(run).not.toHaveBeenCalled();
+      const history = vi.spyOn(app, "chatHistory").mockReturnValue({ id: "old", file: "old.json", messages: [{ role: "user", text: "private old chat" }],
+        usage: { input: 7, output: 3, cost: 1 }, pendingToolCalls: [] });
+      expect(freshSessionChecks(app).noChatHistory).toBe(false); history.mockRestore();
+    } finally { await app.close(); rmSync(fixtureRoot, { recursive: true, force: true }); }
   });
 });
