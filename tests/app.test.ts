@@ -430,6 +430,44 @@ describe("application model settings", () => {
     expect(test.chat.send).not.toHaveBeenCalled(); expect(test.runner.run).not.toHaveBeenCalled();
   });
 
+  it.each(["success", "failure", "cancelled", "late completion"] as const)("resets chat history and application usage only after successful logout (%s)", async outcome => {
+    const messages: { role: "user"; text: string }[] = [];
+    const used = { ...usage, cacheRead: 1, cacheInput: 3 };
+    const emptyUsage = { input: 0, output: 0, cost: 0 };
+    const chat = {
+      send: async (request: ChatRequest) => { messages.push({ role: "user", text: request.text }); return used; },
+      reset: vi.fn(() => { messages.splice(0); }),
+      history: () => ({ id: undefined, file: undefined, usage: messages.length ? used : emptyUsage, pendingToolCalls: [], messages: [...messages] }),
+    };
+    const test = setup({ chat });
+    await test.app.chat("Retain this chat unless logout succeeds");
+    const before = test.app.chatHistory();
+    expect(test.app.getSessionInfo().usage).toEqual(used);
+    expect(before?.messages).toHaveLength(1);
+    const backend = Promise.withResolvers<void>();
+    test.settings.logout.mockImplementation(() => backend.promise);
+    const abort = new AbortController();
+    const pending = test.app.logout("fixture", abort.signal);
+    const settled = outcome === "success" ? expect(pending).resolves.toBeUndefined() : expect(pending).rejects.toThrow();
+    await Promise.resolve();
+    expect(test.settings.logout).toHaveBeenCalledWith("fixture", expect.any(AbortSignal));
+    if (outcome === "cancelled" || outcome === "late completion") abort.abort();
+    if (outcome === "failure" || outcome === "cancelled") backend.reject(new Error("Synthetic logout failure"));
+    else backend.resolve();
+    await settled;
+    expect(test.app.getSessionInfo()).toMatchObject({ busy: false, usage: outcome === "success" ? emptyUsage : used });
+    expect(test.app.snapshot().usage).toEqual(outcome === "success" ? emptyUsage : used);
+    if (outcome === "success") {
+      expect(chat.reset).toHaveBeenCalledOnce();
+      expect(test.app.chatHistory()?.messages).toEqual([]);
+      await test.app.chat("Start with fresh usage");
+      expect(test.app.getSessionInfo().usage).toEqual(used);
+    } else {
+      expect(chat.reset).not.toHaveBeenCalled();
+      expect(test.app.chatHistory()).toEqual(before);
+    }
+  });
+
   it("uses saved credentials instead of a stale explicit key environment override", async () => {
     const test = setup(); await test.app.close();
     test.config.models.execute = { provider: "fixture", model: "model-a", apiKeyEnv: "OLD_KEY_ENV" };

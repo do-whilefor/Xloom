@@ -280,5 +280,13 @@ export class AppController {
       this.useStoredCredential(provider);
     });
   }
-  logout(provider: string, externalSignal?: AbortSignal): Promise<void> { return this.perform(this.mode, async signal => { await this.settings.logout(provider, signal); this.chatSession.reset(); this.refreshDisplayInfo(true); }, externalSignal); }
+  logout(provider: string, externalSignal?: AbortSignal): Promise<void> {
+    return this.perform(this.mode, async signal => {
+      await this.settings.logout(provider, signal);
+      signal.throwIfAborted();
+      this.chatSession.reset();
+      this.chatUsage = { input: 0, output: 0, cost: 0 };
+      this.refreshDisplayInfo(true);
+    }, externalSignal);
+  }
 }
