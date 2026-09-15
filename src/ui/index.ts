@@ -121,9 +121,12 @@ export async function runTui(controller: UiController, terminal: Terminal, optio
   const quit = (): void => {
     if (closing) return;
     closing = true;
-    interrupted = "stopped";
     dialogs.cancel();
-    try { controller.stop(); }
+    try {
+      // Exiting an idle session must not replace a saved pause/error diagnosis.
+      const busy = active || (!setting && (controller.getSessionInfo?.().busy ?? controller.snapshot().status === "running"));
+      if (busy) { interrupted = "stopped"; controller.stop(); }
+    }
     catch (error) { print("xloom", error instanceof Error ? error.message : String(error), true); }
     finally { resolveExit(); }
   };

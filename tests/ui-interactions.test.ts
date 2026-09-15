@@ -227,7 +227,8 @@ describe("TUI slash candidates and compact transcript", () => {
     expect(app.terminal.stopped).toBe(false);
     app.terminal.input("\r");
     await app.session;
-    expect(app.controller.stop).toHaveBeenCalledOnce();
+    expect(app.controller.stop).not.toHaveBeenCalled();
+    expect(app.terminal.stopped).toBe(true);
   });
 
   it("Esc closes suggestions before pausing; Ctrl+C still clears a suggested draft", async () => {
@@ -341,7 +342,8 @@ describe("TUI clipboard", () => {
     expect(app.terminal.stopped).toBe(false);
     app.terminal.input("\r");
     await app.session;
-    expect(app.controller.stop).toHaveBeenCalledOnce();
+    expect(app.controller.stop).not.toHaveBeenCalled();
+    expect(app.terminal.stopped).toBe(true);
   });
 
   it("keeps all native bracketed-paste chunks as text, including control bytes", () => {
@@ -467,7 +469,7 @@ describe("TUI Ctrl+C and exit", () => {
     expect(plainText(app.terminal.output)).toMatch(/Ctrl\+C.*退出/);
     app.terminal.input("\x03");
     await app.session;
-    expect(app.controller.stop).toHaveBeenCalledOnce();
+    expect(app.controller.stop).not.toHaveBeenCalled();
     expect(app.terminal.stopped).toBe(true);
   });
 
@@ -502,7 +504,8 @@ describe("TUI Ctrl+C and exit", () => {
     app.terminal.input("\x03");
     await app.session;
     expect(writeText).toHaveBeenCalledOnce();
-    expect(app.controller.stop).toHaveBeenCalledOnce();
+    expect(app.controller.stop).not.toHaveBeenCalled();
+    expect(app.terminal.stopped).toBe(true);
   });
 
   it("cancels exit confirmation after intervening keyboard input", async () => {
@@ -514,7 +517,8 @@ describe("TUI Ctrl+C and exit", () => {
     expect(app.controller.stop).not.toHaveBeenCalled();
     app.terminal.input("\x03");
     await app.session;
-    expect(app.controller.stop).toHaveBeenCalledOnce();
+    expect(app.controller.stop).not.toHaveBeenCalled();
+    expect(app.terminal.stopped).toBe(true);
   });
 
   it("cancels exit confirmation after a submitted command", async () => {
@@ -525,7 +529,8 @@ describe("TUI Ctrl+C and exit", () => {
     expect(app.controller.stop).not.toHaveBeenCalled();
     app.terminal.input("\x03");
     await app.session;
-    expect(app.controller.stop).toHaveBeenCalledOnce();
+    expect(app.controller.stop).not.toHaveBeenCalled();
+    expect(app.terminal.stopped).toBe(true);
   });
 
   it("expires the exit confirmation after two seconds", async () => {
@@ -538,7 +543,8 @@ describe("TUI Ctrl+C and exit", () => {
     now.mockReturnValue(12002);
     app.terminal.input("\x03");
     await app.session;
-    expect(app.controller.stop).toHaveBeenCalledOnce();
+    expect(app.controller.stop).not.toHaveBeenCalled();
+    expect(app.terminal.stopped).toBe(true);
   });
 
   it("discards a clipboard result that arrives after Ctrl+C clears the draft", async () => {
@@ -563,7 +569,7 @@ describe("TUI Ctrl+C and exit", () => {
     const app = launch();
     app.submit("/exit");
     await app.session;
-    expect(app.controller.stop).toHaveBeenCalledOnce();
+    expect(app.controller.stop).not.toHaveBeenCalled();
     expect(app.terminal.stopped).toBe(true);
   });
 });
