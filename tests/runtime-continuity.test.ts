@@ -3,7 +3,7 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage, StreamFn } from "@earendil-works/pi-agent-core";
-import { createAssistantMessageEventStream, type AssistantMessage, type Model, type Usage } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, type AssistantMessage, type Context, type Model, type Usage } from "@earendil-works/pi-ai";
 import { CONTEXT_SUMMARY_MARKER, createContextSummarizer, isTransientModelFailure, loadCheckpoint, prepareContext, recoverableMessages, saveCheckpoint, requireContextCapacity,
   type CheckpointIdentity, type CheckpointState } from "../src/runtime/continuity.js";
 import { nativeReadBatch, pruneReadBatches } from "../src/runtime/context-pruning.js";
@@ -107,6 +107,18 @@ describe("long-running context maintenance", () => {
       expect(transcript).not.toContain(exact[1]);
       messages = [...result.messages, ...Array.from({ length: 20 }, (_, i) => batch(`round-${round}-${i}`)).flat()];
     }
+  });
+  it("retains a complete 8 KiB original within a large model's proportional allowance", async () => {
+    const text = "x".repeat(4100) + " identity=river_otter; state=build_91; DENIED; OP-72946 completed; do not replay. ";
+    const exact = nativeBatch("full-original", text.padEnd(8192, "x"));
+    const selected = { ...model, contextWindow: 128000, maxTokens: 16384 };
+    const messages = [user(), ...exact, ...Array.from({ length: 28 }, (_, i) => batch(`filler-${i}`, "padding ".repeat(2000))).flat()];
+    const before = structuredClone(messages), summarize = vi.fn(async () => ({ text: "Older inspection work summarized." }));
+    const result = await prepareContext(messages, selected, undefined, summarize, false, undefined, { taskCore: () => "[XLOOM TASK CORE]\nInspect the original." });
+    expect(result.compacted).toBe(true); expect(summarize).toHaveBeenCalledOnce();
+    expect(result.maintenance?.retainedReadBatches).toBe(1);
+    expect(result.messages).toContain(exact[1]); expect(messages).toEqual(before);
+    expect(result.estimatedTokensAfter).toBeLessThan(selected.contextWindow * 0.5);
   });
   it("compacts for complete request pressure when provider usage is unavailable", async () => {
     const selected = { ...model, contextWindow: 16000 };
@@ -334,6 +346,26 @@ describe("summary provider calls", () => {
     const result = await summarizer([user(), ...batch("a")], model);
     expect(result.text).toBe("Preserved A + B hypothesis.");
     expect(counted).toHaveBeenCalledExactlyOnceWith(usage);
+  });
+
+  it("sends the complete older original to the summary model when newer originals fill the exact allowance", async () => {
+    const detail = "identity=river_otter; build_91; DENIED; CSRF token mismatch; OP-72946 completed; do not replay.";
+    const text = ("x".repeat(4100) + detail).padEnd(8192, "y");
+    const older = nativeBatch("older", text), newer = nativeBatch("newer", "Later separate original. ".padEnd(8192, "z"));
+    const selected = { ...model, contextWindow: 32000, maxTokens: 4000 };
+    const messages = [user(), ...older, ...newer, ...Array.from({ length: 30 }, (_, i) => batch(`filler-${i}`, "padding ".repeat(500))).flat()];
+    const before = structuredClone(messages), counted = vi.fn();
+    const summarize = createContextSummarizer(stream(assistant([{ type: "text", text: detail }]), (_options, context) => {
+      const transcript = (context as Context).messages[0].content;
+      expect(transcript).toContain(`[Tool result]: ${(older[1] as any).content[0].text}`);
+      expect(transcript).toContain(detail); expect(transcript).toContain("y".repeat(2000));
+      expect(transcript).not.toContain("more characters truncated");
+    }), counted);
+    const result = await prepareContext(messages, selected, undefined, summarize, false, undefined, { taskCore: () => "[XLOOM TASK CORE]\nInspect observations." });
+    expect(result.compacted).toBe(true); expect(result.maintenance?.retainedReadBatches).toBe(1);
+    expect(result.messages).toContain(newer[1]); expect(result.messages).not.toContain(older[1]);
+    expect(JSON.stringify(result.messages)).toContain(detail); expect(messages).toEqual(before);
+    expect(counted).toHaveBeenCalledOnce();
   });
 
   it("summarizes user corrections and public tool records without promoting private thinking into conversation history", async () => {
