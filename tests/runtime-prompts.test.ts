@@ -107,6 +107,9 @@ describe("compact built-in prompts", () => {
         expect(context.systemPrompt?.startsWith(`${chatPrompt}\n`)).toBe(true);
         expect(context.systemPrompt).toContain('Model ID: "offline"; provider: "test".');
         expect(context.systemPrompt).toContain("For model questions, give this exact ID.");
+        // Stored transcripts are off-limits; current conversation memory is not.
+        expect(context.systemPrompt).toContain("Never read stored transcripts or credentials");
+        expect(context.systemPrompt).not.toContain("Never access private transcripts");
         expect(context.systemPrompt!.length).toBeLessThanOrEqual(300);
         expect(context.systemPrompt).not.toMatch(/model-turn limit|maxTurnsPerRun|final allowed model|JSON object/);
         expect(context.systemPrompt).not.toContain(powerShellPrompt);

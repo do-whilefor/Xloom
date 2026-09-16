@@ -722,7 +722,7 @@ describe("Pi runtime isolation", () => {
         expect(context.tools).toEqual([]);
         return message([{ type: "text", text: "Repeatedly inspected long.txt. No verified conclusion; preserve the current Step and inspect original evidence." }]);
       }
-      sawSummary ||= JSON.stringify(context.messages).includes("XLOOM PRIVATE CONTEXT SUMMARY");
+      sawSummary ||= JSON.stringify(context.messages).includes("[XLOOM CONTEXT SUMMARY]");
       // Every retained call must still have its corresponding result.
       for (const item of context.messages) if (item.role === "assistant") for (const part of item.content) if (part.type === "toolCall") {
         expect(context.messages.some(result => result.role === "toolResult" && result.toolCallId === part.id)).toBe(true);

@@ -41,7 +41,7 @@ async function request() {
     limits: { maxNoProgress: 3, maxMinutes: 30, maxTokens: null, maxCost: null, maxTurnsPerRun: null, stepTimeoutSeconds: 180, metacogEvery: 3 } };
   return { input, events, directory };
 }
-const isSummary = (context: Context) => context.systemPrompt?.startsWith("Summarize the older conversation as private working memory.") ?? false;
+const isSummary = (context: Context) => context.systemPrompt?.startsWith("Summarize the older conversation") ?? false;
 
 describe("durable private chat", () => {
   it("compacts a small-context chat including tool overhead when usage is unavailable within one session", async () => {
@@ -276,6 +276,7 @@ describe("chat context maintenance integration", () => {
     await second.send({ ...input, text: "New launch, new conversation." });
     expect(seen.at(-1)!.messages).toHaveLength(1);
     expect(JSON.stringify(seen.at(-1)!.messages)).not.toMatch(/MEMORY_OLD|MEMORY_CURRENT|XLOOM PRIVATE CONTEXT SUMMARY/);
+    expect(JSON.stringify(seen.at(-1)!.messages)).not.toContain(CONTEXT_SUMMARY_MARKER);
     expect(second.history().file).not.toBe(archive);
     expect(await readFile(archive, "utf8")).toBe(archivedBytes);
     second.close();
