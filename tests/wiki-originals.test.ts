@@ -35,6 +35,25 @@ function fixture(body = "unrelated prefix\n".repeat(5000) + "downloadGrant=LOCAL
 const ref = { stepId: "S-old", gapId: "gap-download" };
 
 describe("gap-driven original search and located reading", () => {
+  it.each([undefined, 0])("reads and verifies empty originals with byteLength=%s without inventing content or pages", async byteLength => {
+    const { board, root, file } = fixture("");
+    const evidence = board.evidence[0]!;
+    const locator = { evidenceId: evidence.id, sha256: evidence.sha256, byteOffset: 0, byteLength };
+    const tool = createWorkspaceReadTool(root, undefined, { dataDir: root, snapshot: () => board });
+    const read = JSON.parse((await tool.execute("empty-original", { path: originalReadPath(locator) })).content[0]!.text as string);
+    expect(read).toMatchObject({ type: "original_read", integrity: "verified", text: "", rangeSha256: evidence.sha256,
+      locator: { evidenceId: evidence.id, byteOffset: 0, byteLength: 0 }, omittedBefore: 0, omittedAfter: 0,
+      reading: { originalsWithUnreadBytes: 0, fullyDeliveredOriginals: 1 } });
+    expect(read.nextReadPath).toBeUndefined();
+    expect(read.startReadPath).toBeUndefined();
+    expect(readOriginal(board, root, root, { ...locator, contextBytes: 1024 })).toMatchObject({ text: "", integrity: "verified" });
+    expect(searchOriginals(board, root, root, "anything")).toMatchObject({ complete: true, hits: [], issues: [] });
+    for (const extra of [{ byteOffset: 1 }, { byteLength: 1 }, { byteLength: -1 }, { sha256: "stale" }])
+      expect(() => readOriginal(board, root, root, { ...locator, ...extra })).toThrow();
+    writeFileSync(file, "tampered");
+    expect(() => readOriginal(board, root, root, locator)).toThrow("SHA-256/size mismatch");
+  });
+
   it("finds content beyond metadata/excerpts and reads exactly the hashed source range", () => {
     const { board, root, body } = fixture(), before = structuredClone(board);
     const result = searchOriginals(board, root, root, "downloadGrant 下载授权");
@@ -139,7 +158,7 @@ describe("gap-driven original search and located reading", () => {
   });
   it("rejects stale locators, unknown IDs, invalid ranges and UTF-8 cuts", () => {
     const { board, root } = fixture("下载授权 downloadGrant"); const locator = searchOriginals(board, root, root, "downloadGrant").hits[0]!.locator;
-    for (const extra of [{ evidenceId: "E-other-task" }, { sha256: "stale" }, { byteOffset: -1 }, { byteLength: 9000 }, { byteOffset: 1, byteLength: 1 }])
+    for (const extra of [{ evidenceId: "E-other-task" }, { sha256: "stale" }, { byteOffset: -1 }, { byteLength: 0 }, { byteLength: 9000 }, { byteOffset: 1, byteLength: 1 }])
       expect(() => readOriginal(board, root, root, { ...locator, ...extra })).toThrow();
   });
   it("does not search unregistered/private files or follow archive directory links", () => {

@@ -497,7 +497,8 @@ export class BlackboardStore {
     assert(statSync(canonical).isFile() && statSync(canonical).size <= 10 * 1024 * 1024, "Evidence must be a regular file at most 10 MiB.");
     const data = readFileSync(canonical);
     assert(!isWikiDerived(data.toString("utf8")), "Generated Wiki/RAG/audit materials are derived explanations, not original evidence. Reference their underlying Facts/Evidence instead.");
-    assert(data.length > 0 && data.length <= 10 * 1024 * 1024, "Evidence must contain 1 byte–10 MiB.");
+    // Empty stdout/stderr and response bodies are valid originals; archive their exact bytes.
+    assert(data.length <= 10 * 1024 * 1024, "Evidence must contain at most 10 MiB.");
     const sha256 = hash(data);
     const targetDir = path.join(this.dataDir, "evidence");
     mkdirSync(targetDir, { recursive: true });

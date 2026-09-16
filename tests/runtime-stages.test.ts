@@ -124,6 +124,51 @@ function seedFixtureGoals(test: ReturnType<typeof setup>): void {
 }
 
 describe("durable Execute checkpoints through the real Pi tool loop", () => {
+  it.each(["final", "checkpoint"] as const)("commits a real command's empty stderr through %s without aborting or replaying the command", async route => {
+    const test = setup((run, context, input) => {
+      if (run.channel !== "offline-execute") return planning(input);
+      const stdout = join(input.artifacts, "stdout.txt"), stderr = join(input.artifacts, "stderr.txt"), exit = join(input.artifacts, "exit.json");
+      if (run.contexts.length === 1) {
+        const quote = (value: string) => `'${value.replaceAll("'", "''")}'`;
+        return message([{ type: "toolCall", id: "command-once", name: "powershell", arguments: { command:
+          `& ${quote(process.execPath)} --version 1> ${quote(stdout)} 2> ${quote(stderr)}\n` +
+          `[System.IO.File]::WriteAllText(${quote(exit)}, (ConvertTo-Json @{ command = 'node --version'; exitCode = $LASTEXITCODE }))`,
+        } }], "toolUse");
+      }
+      if (run.contexts.length === 2) {
+        expect(context.messages.at(-1)).toMatchObject({ role: "toolResult", toolCallId: "command-once", isError: false });
+        expect(readFileSync(stdout, "utf8").trim()).toBe(process.version);
+        expect(readFileSync(stderr)).toEqual(Buffer.alloc(0));
+        expect(JSON.parse(readFileSync(exit, "utf8"))).toEqual({ command: "node --version", exitCode: 0 });
+        const output: Execution = { summary: "Node version command completed with empty stderr", result: "done",
+          evidence: [{ ref: "out", path: stdout, description: "Original node version stdout" },
+            { ref: "err", path: stderr, description: "Original empty stderr" }, { ref: "exit", path: exit, description: "Command and exit code" }],
+          facts: [{ ref: "result", description: `node --version returned ${process.version}, exit code 0 and no stderr bytes`, evidenceRefs: ["out", "err", "exit"] }],
+        };
+        return message([{ type: "toolCall", id: "commit-command", name: route === "final" ? "submit" : "write",
+          arguments: route === "final" ? { output } : { path: input.checkpointFile!, content: { id: "empty-stderr", execution: output } },
+        }], "toolUse");
+      }
+      expect(route).toBe("checkpoint");
+      expect(JSON.parse(toolText(context))).toMatchObject({ committed: true });
+      return json({ summary: "Command result already checkpointed", result: "done" });
+    });
+    await test.controller.start();
+    const board = test.controller.snapshot();
+    expect(board, board.reason).toMatchObject({ status: "paused", outcome: null, completedSteps: 1 });
+    expect(board.steps[0].status).toBe("done");
+    expect(board.evidence).toHaveLength(3);
+    const empty = board.evidence.find(item => item.bytes === 0)!;
+    expect(empty).toBeDefined();
+    expect(readFileSync(join(test.store.dataDir, empty.path))).toEqual(Buffer.alloc(0));
+    expect(() => test.store.verifyEvidence(empty)).not.toThrow();
+    expect(board.facts[0].evidenceIds).toContain(empty.id);
+    expect(test.store.runs().every(run => run.status === "completed")).toBe(true);
+    expect(test.events.filter(event => event.runtime?.type === "tool_start" && event.runtime.toolCallId === "command-once")).toHaveLength(1);
+    expect(test.events.filter(event => event.runtime?.type === "tool_end" && event.runtime.isError)).toEqual([]);
+    assertExactUsage(test);
+  });
+
   it.each(["missing-conclusion", "need-input-with-root", "missing-root", "empty-root-facts"] as const)("repairs %s in the same Pi metacog run before committing completion", async invalid => {
     const test = setup((run, context, input) => {
       if (run.channel === "offline-execute") {

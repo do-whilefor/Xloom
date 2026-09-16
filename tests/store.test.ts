@@ -397,6 +397,32 @@ describe("transactional blackboard", () => {
 });
 
 describe("evidence boundaries and integrity", () => {
+  it.each(["final", "checkpoint"] as const)("archives empty stderr alongside its command result through %s submission", route => {
+    const store = openStore();
+    const { runId, artifacts } = claimStep(store);
+    writeFileSync(path.join(artifacts, "command.json"), '{"command":"node --version","exitCode":0}');
+    writeFileSync(path.join(artifacts, "stderr.txt"), "");
+    const output: Execution = { summary: "Command returned exit code 0 with no stderr bytes", result: "done",
+      evidence: [{ ref: "command", path: "command.json", description: "Recorded command and exit code" },
+        { ref: "stderr", path: "stderr.txt", description: "Original empty stderr" }],
+      facts: [{ ref: "result", description: "Recorded command exited with code 0 and empty stderr", evidenceRefs: ["command", "stderr"] }],
+    };
+    const board = route === "final" ? store.applyExecution(runId, output, usage)
+      : store.applyExecutionCheckpoint(runId, "empty-stderr", output, usage);
+    expect(board).toMatchObject({ status: "running", outcome: null, completedSteps: route === "final" ? 1 : 0 });
+    expect(board.steps[0].status).toBe(route === "final" ? "done" : "claimed");
+    expect(board.evidence).toHaveLength(2);
+    expect(board.facts[0].evidenceIds).toEqual(board.evidence.map(item => item.id));
+    const empty = board.evidence.find(item => item.bytes === 0)!;
+    expect(empty).toMatchObject({ sha256: createHash("sha256").update("").digest("hex"), excerpt: "", runId });
+    const archived = path.join(store.dataDir, empty.path);
+    expect(readFileSync(archived)).toEqual(Buffer.alloc(0));
+    writeFileSync(path.join(artifacts, "stderr.txt"), "source changed after collection");
+    expect(() => store.verifyEvidence(empty)).not.toThrow();
+    writeFileSync(archived, "archive tampered");
+    expect(() => store.verifyEvidence(empty)).toThrow("Evidence changed");
+  });
+
   it("archives original bytes with a verifiable SHA-256 independent of the mutable source", () => {
     const store = openStore();
     const { runId, artifacts } = claimStep(store);
@@ -431,12 +457,12 @@ describe("evidence boundaries and integrity", () => {
     expect(() => store.applyExecution(runId, hitOutput(path.join("escape", "response.txt")), usage)).toThrow(/inside this run's artifacts/);
   });
 
-  it.each(["empty", "oversized", "directory"])("rejects %s evidence", (form) => {
+  it.each(["oversized", "directory"])("rejects %s evidence", (form) => {
     const store = openStore();
     const { runId, artifacts } = claimStep(store);
     const file = path.join(artifacts, "response.txt");
     if (form === "directory") mkdirSync(file);
-    else writeFileSync(file, form === "empty" ? Buffer.alloc(0) : Buffer.alloc(10 * 1024 * 1024 + 1));
+    else writeFileSync(file, Buffer.alloc(10 * 1024 * 1024 + 1));
     expect(() => store.applyExecution(runId, hitOutput(), usage)).toThrow(/Evidence must/);
     expect(store.snapshot().evidence).toEqual([]);
   });

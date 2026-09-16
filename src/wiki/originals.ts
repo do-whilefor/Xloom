@@ -238,8 +238,9 @@ export function readOriginal(board: BoardSnapshot, dataDir: string, workspace: s
   if (request.sha256 !== evidence.sha256) throw new Error("Stale evidence locator; search the current original again");
   const { byteOffset } = request;
   const byteLength = request.byteLength ?? Math.min(4096, evidence.bytes - byteOffset);
-  if (!Number.isSafeInteger(byteOffset) || byteOffset < 0 || !Number.isSafeInteger(byteLength) || byteLength < 1 || byteLength > 8192 || byteOffset + byteLength > evidence.bytes)
-    throw new Error(`Original locator must be within the registered file, with byteLength 1–8192. File has ${evidence.bytes} bytes; byteOffset is zero-based and offset + length must not exceed file size. Omit byteLength for automatic UTF-8 paging and copy returned nextReadPath. Restart path: ${originalReadPath({ evidenceId: evidence.id, sha256: evidence.sha256, byteOffset: 0 })}`);
+  const minimumLength = evidence.bytes === 0 ? 0 : 1;
+  if (!Number.isSafeInteger(byteOffset) || byteOffset < 0 || !Number.isSafeInteger(byteLength) || byteLength < minimumLength || byteLength > 8192 || byteOffset + byteLength > evidence.bytes)
+    throw new Error(`Original locator must be within the registered file, with byteLength ${minimumLength}–8192. File has ${evidence.bytes} bytes; byteOffset is zero-based and offset + length must not exceed file size. Omit byteLength for automatic UTF-8 paging and copy returned nextReadPath. Restart path: ${originalReadPath({ evidenceId: evidence.id, sha256: evidence.sha256, byteOffset: 0 })}`);
   const contextBytes = request.contextBytes ?? 0;
   if (!Number.isSafeInteger(contextBytes) || contextBytes < 0 || contextBytes > 2048)
     throw new Error("contextBytes must be an integer from 0 to 2048 per side");
