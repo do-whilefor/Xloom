@@ -47,12 +47,12 @@ describe("source package pagination", () => {
       ...f.board.facts.filter(fact => fact.evidenceIds.includes(f.board.evidence[0]!.id)).map(fact => ({ kind: "fact" as const, id: fact.id }))];
     const full = retrieveWiki(f.board, f.context.dataDir, f.root, "", { anchors, limit: anchors.length });
     expect(JSON.stringify(full).length).toBeGreaterThan(64000);
-    const first = f.read(f.path) as { complete: boolean; nextReadPath: string; records: object[] };
+    const first = f.read(f.path) as unknown as { complete: boolean; nextReadPath: string; records: object[] };
     expect(first).toMatchObject({ complete: false, records: [] });
     let path: string | undefined = first.nextReadPath;
     const records = new Map<string, object>(); let count = 0; let last: Page | undefined;
     while (path) {
-      const page = f.read(path) as Page;
+      const page = f.read(path) as unknown as Page;
       expect(page.type).toBe("source_page"); expect(page.records.length).toBeGreaterThan(0);
       expect(JSON.stringify(page).length).toBeLessThanOrEqual(64000);
       expect(retrievalFeedback(page)).toContain("来源分批交付");
@@ -68,15 +68,15 @@ describe("source package pagination", () => {
   });
   it("does not declare skipped pages complete and rejects stale cursors after a source correction", () => {
     const f = setup();
-    const first = f.read(`${f.path}&sourceOffset=0&budgetChars=16000`) as Page;
+    const first = f.read(`${f.path}&sourceOffset=0&budgetChars=16000`) as unknown as Page;
     expect(first.complete).toBe(false); expect(first.nextReadPath).toBeDefined();
     const fresh = createTaskReader(f.root, f.context);
-    const skipped = fresh(first.nextReadPath!) as Page;
+    const skipped = fresh(first.nextReadPath!) as unknown as Page;
     expect(skipped.complete).toBe(false);
     expect(new URL(skipped.nextReadPath!).searchParams.get("sourceOffset")).toBe("0");
     f.board.facts[0]!.description += " Correction: identity changed to bob / v2.";
     expect(() => f.read(first.nextReadPath!)).toThrow("Source package changed");
-    const corrected = f.read(`${f.path}&sourceOffset=0&budgetChars=16000`) as Page;
+    const corrected = f.read(`${f.path}&sourceOffset=0&budgetChars=16000`) as unknown as Page;
     expect(corrected.packageSignature).not.toBe(first.packageSignature);
     expect(() => fresh(`${f.path}&sourceOffset=3`)).toThrow("packageSignature");
   });
@@ -84,11 +84,11 @@ describe("source package pagination", () => {
     const f = setup(); f.board.facts[0]!.evidenceIds.push("E-absent");
     let path: string | undefined = `${f.path}&sourceOffset=0&budgetChars=64000`;
     let last: Page | undefined; let pages = 0;
-    while (path) { last = f.read(path) as Page; path = last.nextReadPath; expect(++pages).toBeLessThan(10); }
+    while (path) { last = f.read(path) as unknown as Page; path = last.nextReadPath; expect(++pages).toBeLessThan(10); }
     expect(last).toMatchObject({ complete: false, status: "source_missing" });
     f.board.evidence[0]!.description = "Whole record remains unverified. ".repeat(4000);
-    let huge = f.read(`${f.path}&sourceOffset=0&budgetChars=64000`) as Page & { fileReadPath: string };
-    while (huge.nextReadPath) { huge = f.read(huge.nextReadPath) as typeof huge; expect(++pages).toBeLessThan(15); }
+    let huge = f.read(`${f.path}&sourceOffset=0&budgetChars=64000`) as unknown as Page & { fileReadPath: string };
+    while (huge.nextReadPath) { huge = f.read(huge.nextReadPath) as unknown as typeof huge; expect(++pages).toBeLessThan(15); }
     expect(huge).toMatchObject({ complete: false, status: "record_exceeds_budget", records: [] });
     expect(huge.nextReadPath).toBeUndefined(); expect(huge.fileReadPath).toBeTruthy();
     expect(JSON.stringify(huge)).not.toContain("Whole record remains");

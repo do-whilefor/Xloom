@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AssistantMessageEventStream, type AssistantMessage, type Context, type Model } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, type AssistantMessage, type Context, type Model } from "@earendil-works/pi-ai";
 import { estimateTokens } from "@earendil-works/pi-coding-agent";
 import { defaultConfig } from "../src/config.js";
 import { decisionSchema, executionSchema } from "../src/schema.js";
@@ -25,7 +25,7 @@ function captureChat(seen: Context[]): ChatSession {
       usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
     };
-    const events = new AssistantMessageEventStream();
+    const events = createAssistantMessageEventStream();
     queueMicrotask(() => {
       events.push({ type: "done", reason: "stop", message });
       events.end();

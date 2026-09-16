@@ -3,7 +3,7 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage, StreamFn } from "@earendil-works/pi-agent-core";
-import { AssistantMessageEventStream, type AssistantMessage, type Model, type Usage } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, type AssistantMessage, type Model, type Usage } from "@earendil-works/pi-ai";
 import { CONTEXT_SUMMARY_MARKER, createContextSummarizer, isTransientModelFailure, loadCheckpoint, prepareContext, recoverableMessages, saveCheckpoint, requireContextCapacity,
   type CheckpointIdentity, type CheckpointState } from "../src/runtime/continuity.js";
 import { nativeReadBatch, pruneReadBatches } from "../src/runtime/context-pruning.js";
@@ -70,7 +70,7 @@ describe("long-running context maintenance", () => {
     const core = "[XLOOM TASK CORE]\nGoal: inspect CSRF. 只能修改 auth.py. Current identity=bob/v3. F-1 is superseded by F-2.";
     const result = await prepareContext(messages, selected, undefined, summarize, false, undefined, { taskCore: () => core });
     expect(result.compacted).toBe(true); expect(summarize).not.toHaveBeenCalled();
-    expect(result.messages[0]!.content).toBe(core); expect(result.messages.slice(1)).toEqual(messages.slice(1));
+    expect(result.messages[0]).toMatchObject({ role: "user", content: core }); expect(result.messages.slice(1)).toEqual(messages.slice(1));
     expect(result.maintenance?.taskCoreRebuilt).toBe(true); expect(messages).toEqual(before);
     expect((await prepareContext(result.messages, selected, undefined, summarize, false, undefined, { taskCore: () => core })).compacted).toBe(false);
   });
@@ -101,7 +101,7 @@ describe("long-running context maintenance", () => {
     for (let round = 0; round < 3; round++) {
       const result = await prepareContext(messages, selected, undefined, summarize, false, undefined, { taskCore: () => core });
       expect(result.compacted).toBe(true); expect(result.maintenance?.retainedReadBatches).toBe(1);
-      expect(result.messages[0]!.content).toBe(core); expect(result.messages).toContain(exact[1]);
+      expect(result.messages[0]).toMatchObject({ role: "user", content: core }); expect(result.messages).toContain(exact[1]);
       expect(nativeReadBatch(exact)?.original).toBe(true);
       const transcript = summarize.mock.calls.at(-1)![0] as AgentMessage[];
       expect(transcript).not.toContain(exact[1]);
@@ -134,7 +134,7 @@ describe("long-running context maintenance", () => {
     const chat = await prepareContext(messages, model, undefined, summarize, true);
     expect(chat.compacted).toBe(true);
     expect(chat.messages).toContain(correction);
-    expect(chat.messages.indexOf(correction)).toBeLessThan(chat.messages.findIndex(m => typeof m.content === "string" && m.content.startsWith(CONTEXT_SUMMARY_MARKER)));
+    expect(chat.messages.indexOf(correction)).toBeLessThan(chat.messages.findIndex(m => m.role === "user" && typeof m.content === "string" && m.content.startsWith(CONTEXT_SUMMARY_MARKER)));
     expect(chat.messages.at(-1)).toBe(newest);
     expect(chat.messages[0]).toBe(messages[0]);
     expect(JSON.stringify(messages)).toBe(original);
@@ -150,7 +150,7 @@ describe("long-running context maintenance", () => {
     expect(result.compacted).toBe(true);
     expect(result.messages).not.toContain(oldSummary);
     expect(result.messages).not.toContain(messages[2]);
-    expect(result.messages.filter(m => typeof m.content === "string" && m.content.startsWith(CONTEXT_SUMMARY_MARKER))).toHaveLength(1);
+    expect(result.messages.filter(m => m.role === "user" && typeof m.content === "string" && m.content.startsWith(CONTEXT_SUMMARY_MARKER))).toHaveLength(1);
     expect(result.estimatedTokensAfter).toBeLessThan(model.contextWindow);
   });
 
@@ -164,8 +164,8 @@ describe("long-running context maintenance", () => {
     expect(result.messages).not.toContain(oldSummary);
     expect(result.messages.filter(m => m.role === "user")).toHaveLength(2);
     expect(result.messages[0]).toBe(messages[0]);
-    expect(result.messages[1].content).toContain(CONTEXT_SUMMARY_MARKER);
-    expect(result.messages[1].content).not.toMatch(/PRIVATE CONTEXT SUMMARY|UNVERIFIED/);
+    expect(result.messages[1]).toMatchObject({ content: expect.stringContaining(CONTEXT_SUMMARY_MARKER) });
+    expect(result.messages[1]).not.toMatchObject({ content: expect.stringMatching(/PRIVATE CONTEXT SUMMARY|UNVERIFIED/) });
   });
 
   it.each(["oversized-update", "combined-budget"])("does not pin stale initial Chat text past the historical user allowance (%s), but keeps Run's task", async boundary => {
@@ -181,7 +181,7 @@ describe("long-running context maintenance", () => {
     expect(chat.messages.includes(correction)).toBe(boundary === "combined-budget");
     expect(chat.messages.at(-1)).toBe(newest);
     expect(summarize.mock.calls[0][0].slice(0, 2)).toEqual([initial, correction]);
-    expect(chat.messages.filter(message => typeof message.content === "string" && message.content.startsWith(CONTEXT_SUMMARY_MARKER))).toHaveLength(1);
+    expect(chat.messages.filter(message => message.role === "user" && typeof message.content === "string" && message.content.startsWith(CONTEXT_SUMMARY_MARKER))).toHaveLength(1);
     const run = await prepareContext(messages, model, undefined, summarize);
     expect(run.compacted).toBe(true);
     expect(run.messages[0]).toBe(initial);
@@ -217,7 +217,7 @@ describe("long-running context maintenance", () => {
   it("compacts only older complete batches and preserves the original task and recent tool pairs", async () => {
     const messages = history();
     const original = JSON.stringify(messages);
-    const summarize = vi.fn(async () => ({ text: "Hypothesis A remains unverified. Re-read call-0.txt; tested condition B failed.", usage }));
+    const summarize = vi.fn(async (_messages: AgentMessage[]) => ({ text: "Hypothesis A remains unverified. Re-read call-0.txt; tested condition B failed.", usage }));
     const result = await prepareContext(messages, model, undefined, summarize);
     expect(result.compacted).toBe(true);
     expect(result.messages[0]).toBe(messages[0]);
@@ -312,7 +312,7 @@ describe("summary provider calls", () => {
   function stream(response: AssistantMessage, inspect?: (options: unknown, context: unknown) => void): StreamFn {
     return (_model, context, options) => {
       inspect?.(options, context);
-      const events = new AssistantMessageEventStream();
+      const events = createAssistantMessageEventStream();
       queueMicrotask(() => {
         if (response.stopReason === "error" || response.stopReason === "aborted") events.push({ type: "error", reason: response.stopReason, error: response });
         else events.push({ type: "done", reason: response.stopReason as "stop" | "length" | "toolUse", message: response });
