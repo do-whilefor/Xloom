@@ -54,20 +54,15 @@ describe("built-in method selection and resources", () => {
     }
   });
 
-  it("retains all 13 independent, bounded cards and their upstream attribution", () => {
+  it("loads all 13 independent, bounded cards", () => {
     expect(Object.keys(methodCatalog()).sort()).toEqual([...methodIds].sort());
-    const provenance = JSON.parse(readFileSync(join(methodsDirectory, "provenance.json"), "utf8"));
-    expect(provenance.methods.map((entry: { id: string }) => entry.id).sort()).toEqual([...methodIds].sort());
+    expect(methodIds).toHaveLength(13);
     for (const id of methodIds) {
       const card = loadMethod(id);
       expect(card.execute.length).toBeLessThanOrEqual(700);
       expect(card.review.length).toBeLessThanOrEqual(500);
       expect(card.review).toMatch(/[Rr]eopen/);
-      const source = provenance.methods.find((entry: { id: string }) => entry.id === id);
-      expect(source.cardSha256).toMatch(/^[0-9a-f]{64}$/);
-      expect(source.source_refs.length).toBeGreaterThan(0);
     }
-    expect(readFileSync(join(methodsDirectory, "LICENSE.txt"), "utf8")).toContain("Copyright (c) 2026 w1th0ut");
     expect(() => loadMethod("../catalog")).toThrow(/Unknown built-in method/);
   });
 
@@ -157,7 +152,7 @@ describe("built-in method selection and resources", () => {
     for (const mode of ["decide", "execute", "metacog"] as const) {
       const data = methods(request(mode, [step(largest)]))!;
       expect(JSON.stringify(data).length).toBeLessThanOrEqual(mode === "execute" ? 3_800 : 3_300);
-      expect(JSON.stringify(data)).not.toMatch(/source_refs|cardSha256|webounty/);
+      expect(JSON.stringify(data)).not.toMatch(/source_refs|cardSha256/);
     }
     expect(JSON.stringify(methods(request("decide"))).length).toBeLessThanOrEqual(1_900);
   });

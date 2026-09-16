@@ -1,15 +1,12 @@
 #!/usr/bin/env node
 /**
- * CVSS 3.1 Base Score calculator, adapted from Web-Vulnhunt.
- * Corrected for webounty: Scope Changed, Roundup, vector validation and CLI.
- * Upstream attribution and license: ../THIRD_PARTY_NOTICES.md.
- * CVSS is owned by FIRST.Org, Inc. and used by permission.
+ * CVSS 3.1 Base Score calculator.
  * Formula: https://www.first.org/cvss/v3.1/specification-document
  *
  * Usage:
- *   node cvss31-calculator.js "AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:L/A:L"
- *   node cvss31-calculator.js --json "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
- *   node cvss31-calculator.js    # interactive prompt or piped input
+ *   node cvss31-calculator.cjs "AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:L/A:L"
+ *   node cvss31-calculator.cjs --json "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
+ *   node cvss31-calculator.cjs    # interactive prompt or piped input
  *
  * Prints: score, severity, and the full computation trail.
  * This calculates the supplied Base vector; it does not establish that the

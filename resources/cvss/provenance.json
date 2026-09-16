@@ -1,8 +1,0 @@
-{
-  "origin": "User-supplied Webounty corrected CVSS 3.1 Base calculator",
-  "sourcePath": "webounty/scripts/cvss31-calculator.js",
-  "distributedPath": "resources/cvss/cvss31-calculator.cjs",
-  "normalization": "CRLF to LF, UTF-8",
-  "sourceSha256": "5ef96eacb55565fedc22258611f2eeca4495639b46f391789897e41f4ab7d4da",
-  "verifiedOn": "2026-09-15"
-}

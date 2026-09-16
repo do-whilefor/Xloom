@@ -10,7 +10,7 @@ xloom://compare?left=E-LEFT&right=E-RIGHT&fields=%5B%22response.body.status%22%5
 indexes (`response.body.rows.0.owner_id`). Both archives must be JSON objects;
 recorded `request` and `response` must be objects. Non-HTTP JSON remains usable
 with explicit gaps. Read logs, source files and other formats via their original
-read paths. A Webounty `content` wrapper is not unwrapped automatically.
+read paths. A `content` wrapper is not unwrapped automatically.
 
 The reader checks both complete archives' location, SHA-256, size and UTF-8 before
 comparing. Missing/changed originals return `unavailable` without content diffs.

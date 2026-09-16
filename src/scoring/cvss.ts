@@ -12,7 +12,7 @@ export interface CvssResult {
   baseScore: number; severity: "NONE" | "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
 }
 export const calculatorFile = fileURLToPath(new URL("../../resources/cvss/cvss31-calculator.cjs", import.meta.url));
-// Reuse Webounty's corrected implementation directly, in process. Importing it
+// Load the bundled calculator in process. Importing it
 // does not start a CLI, open stdin, spawn Python or establish another state store.
 const calculator = createRequire(import.meta.url)(calculatorFile) as { calc(vector: string): CvssResult; roundup(value: number): number };
 export const calculateCvss = (vector: string): CvssResult => calculator.calc(vector);

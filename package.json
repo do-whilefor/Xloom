@@ -5,7 +5,7 @@
   "description": "Local two-agent research loop powered by Pi",
   "type": "module",
   "bin": { "xloom": "dist/cli.js" },
-  "files": ["dist", "resources", "docs", "xloom.example.json", "README.md", "LICENSE"],
+  "files": ["dist", "resources", "xloom.example.json", "README.md", "LICENSE"],
   "engines": { "node": ">=24.0.0" },
   "scripts": {
     "start": "tsx src/cli.ts",

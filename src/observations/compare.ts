@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-// Ported from webounty/scripts/compare_observations.py. Differences are not verdicts.
+// Differences are not verdicts.
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 const missing = Symbol("missing");
 type Value = Json | typeof missing;

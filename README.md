@@ -13,7 +13,7 @@ Xloom 是一个本地运行、面向授权安全研究的双 Agent 研究 Loop�
 
 默认以普通聊天打开。Chat 和 Execute 都可使用 `read / write / edit / powershell / chrome` 五个工具。输入 `/run 目标` 切换到双 Agent 红队任务：两个角色不共享聊天历史，只通过结构化黑板协作。Decide 负责计划、读取证据与审查，通过 `read` 读取资料、`submit` 提交提案；Execute 深入调查当前步骤，并可先提交关键观察再继续或交回规划。元认知是 Decide 的一次全新上下文调用，不是第三个 Agent。
 
-`chrome` 按需复用用户已登录的 Chrome，连接跨回复和应用重启保留；用 `/chrome disconnect` 手动断开，`/chrome connect` 允许重连。详见[连接与验证说明](docs/chrome.md)。
+`chrome` 按需复用用户已登录的 Chrome，连接跨回复和应用重启保留；用 `/chrome disconnect` 手动断开，`/chrome connect` 允许重连。
 
 它不做批量扫描，也不预设漏洞数量，而是模拟真实研究过程：
 
@@ -119,15 +119,13 @@ xloom/
 │   ├── loop/                      # ContextProjector / LoopPolicy / 尝试去重
 │   ├── runtime/                   # Pi 运行适配、文件/Shell/Chrome 工具、模型、续接、阶段提交
 │   └── ui/                        # LoopEvent → TUI
-├── docs/
-│   ├── architecture.md            # MVP 架构与扩展接口
-│   └── guide.md                   # 完整使用说明与行为边界
 ├── tests/                         # vitest 单元与集成测试
+├── arxiv.pdf
 ├── xloom.example.json             # 配置样例
 └── LICENSE
 ```
 
-运行数据默认写入用户目录 `~/.xloom/`（Windows 使用系统用户目录，例如 `C:\Users\Acer\.xloom`）。可用绝对路径环境变量 `XLOOM_HOME` 指定另一数据目录。工作区仍是启动目录，或 `--workspace` 指定的目录；默认不再向工作区创建内部 `.xloom`、配置或黑板投影。每次启动都是新会话，不自动加载旧聊天、用量或任务黑板；同次聊天保留连续上下文。`/history` 只查看本次聊天，`/new` 新建聊天并保留归档。历史研究任务须用 `/tasks`、`/open 任务ID` 明确选择后再 `/start` 继续；`/paths` 查看数据位置。详见 [会话与任务](docs/sessions.md)。
+运行数据默认写入用户目录 `~/.xloom/`（Windows 使用系统用户目录，例如 `C:\Users\Acer\.xloom`）。可用绝对路径环境变量 `XLOOM_HOME` 指定另一数据目录。工作区仍是启动目录，或 `--workspace` 指定的目录；默认不再向工作区创建内部 `.xloom`、配置或黑板投影。每次启动都是新会话，不自动加载旧聊天、用量或任务黑板；同次聊天保留连续上下文。`/history` 只查看本次聊天，`/new` 新建聊天并保留归档。历史研究任务须用 `/tasks`、`/open 任务ID` 明确选择后再 `/start` 继续；`/paths` 查看数据位置。
 
 `~/.xloom` 内的布局：
 
@@ -157,11 +155,10 @@ projects/<工作区哈希>/
 
 ## 内置方法库
 
-研究流程内置 Webounty 的 13 张精简方法卡。Decide 从一句话目录选择可选
+研究流程内置 13 张精简方法卡。Decide 从一句话目录选择可选
 `Step.methodIds`（每步最多 3 张），Execute 按需接收测试和判断要点，Decide /
 元认知读取相关复核要点。方法与任务证据分开保存；原有系统提示词、Agent 和工具
-集合保持不变，普通聊天不加载方法库，无需 Skills 或 hook。资源随安装包发布，
-不依赖本地 `webounty/`。选择、上下文预算和来源说明见 [内置方法库](docs/methods.md)。
+集合保持不变，普通聊天不加载方法库，无需 Skills 或 hook。资源随安装包发布。
 
 ## 模型与配置
 
@@ -221,6 +218,4 @@ Execute 的 `powershell` 工具支持结构化 `http` 请求：自动保存原�
 
 ## License
 
-本项目采用 [MIT License](LICENSE)。设计参考 Cairn / Cairn_Y 的黑板协作与 FGS，以及 Jase 的边界建模与影响闭环方法，均为独立实现。Pi 及第三方依赖保留各自原有许可。
-
-内置方法卡基于 Webounty 方法库压缩改写，来源归属和 MIT 许可见 [方法库声明](resources/methods/NOTICE.md)。
+本项目采用 [MIT License](LICENSE)。

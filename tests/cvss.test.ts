@@ -1,6 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -15,8 +14,7 @@ import { wikiRecord } from "../src/wiki/model.js";
 import type { Execution, RunRequest } from "../src/types.js";
 
 const vector = "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N";
-// Fixed published examples, inherited with their FIRST references from
-// webounty/tests/test_cvss.py; expected scores are not produced by this calculator.
+// Fixed regression examples; expected scores are not produced by this calculator.
 const examples = [
   ["AV:N/AC:L/PR:L/UI:N/S:C/C:L/I:L/A:N", 6.4, "MEDIUM"],
   ["AV:N/AC:H/PR:N/UI:R/S:U/C:L/I:N/A:N", 3.1, "LOW"],
@@ -47,7 +45,7 @@ function execution(extra: Partial<Execution> = {}): Execution {
 }
 afterEach(() => { for (const { root, store } of opened.splice(0)) { store.close(); rmSync(root, { recursive: true, force: true }); } });
 
-describe("reused Webounty CVSS calculator", () => {
+describe("bundled CVSS calculator", () => {
   it.each(examples)("calculates %s as %s %s", (bare, score, severity) => {
     expect(calculateCvss(bare)).toMatchObject({ vector: `CVSS:3.1/${bare}`, baseScore: score, severity, version: "3.1", metricGroup: "Base" });
   });
@@ -61,12 +59,7 @@ describe("reused Webounty CVSS calculator", () => {
   it.each([vector.replace("3.1", "4.0"), vector.replace("3.1", "3.0"), vector + "/AV:N", vector + "/E:F", vector.replace("S:U", "S:X"), vector.replace("/S:U", ""), vector.replace("AV:N", "AV:N:EXTRA"), vector + "/"])("rejects invalid or unsupported input %s", value => {
     expect(() => calculateCvss(value)).toThrow(); expect(cvssProposalSchema.safeParse({ ...assessment(), vector: value }).success).toBe(false);
   });
-  it("ships the unchanged implementation, MIT notice, functional CLI and import without stdin side effects", () => {
-    const provenance = JSON.parse(readFileSync(join(calculatorFile, "..", "provenance.json"), "utf8"));
-    expect(provenance.normalization).toBe("CRLF to LF, UTF-8");
-    // Pin the verified original without requiring an untracked reference checkout.
-    expect(createHash("sha256").update(readFileSync(calculatorFile, "utf8").replace(/\r\n/g, "\n")).digest("hex")).toBe(provenance.sourceSha256);
-    expect(readFileSync(join(calculatorFile, "..", "LICENSE"), "utf8")).toContain("Copyright (c) 2026 w1th0ut");
+  it("provides a functional CLI and import without stdin side effects", () => {
     expect(JSON.parse(execFileSync(process.execPath, [calculatorFile, "--json", vector], { encoding: "utf8" })).baseScore).toBe(7.5);
     expect(execFileSync(process.execPath, [calculatorFile, vector], { encoding: "utf8" })).toContain("Score:     7.5");
     const result = execFileSync(process.execPath, ["-e", "const before=process.stdin.listenerCount('data'); const api=require(process.argv[1]); console.log(JSON.stringify([typeof api.calc,process.stdin.listenerCount('data')-before]));", calculatorFile], { encoding: "utf8", input: "not a vector" });

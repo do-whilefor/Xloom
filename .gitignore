@@ -12,11 +12,10 @@ xloom.json
 xloom.json.*.tmp
 webounty/
 AGENTS.md
-/docs/*validation.md
-/docs/retrieval-quality.md
 *.log
 *.jsonl
 /logs/
 /artifacts/
 /evaluations/
 /test-results/
+docs/

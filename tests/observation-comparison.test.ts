@@ -43,7 +43,7 @@ function fixture() {
   return { root, snapshot, add };
 }
 
-describe("native Webounty comparison semantics", () => {
+describe("native observation comparison semantics", () => {
   it("compares business fields under the same HTTP code without a verdict", () => {
     const result = compareValues(raw({ status: "denied" }), raw({ status: "accepted" }), ["response.body.status", "response.body.status"]);
     expect(result).toMatchObject({ assessment: "comparison_only", response: { status: { equal: true }, body: { changedPaths: ["/response/body/status"] } },
