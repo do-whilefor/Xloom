@@ -19,3 +19,8 @@ AGENTS.md
 /evaluations/
 /test-results/
 docs/
+# Keep reference material local, except the published paper.
+/refer/*
+!/refer/papers/
+/refer/papers/*
+!/refer/papers/arxiv.pdf

@@ -76,7 +76,7 @@ npm run check
 
 - [**配置示例**](xloom.example.json)
 - [**工具执行与 HTTP 请求**](resources/runtime/execution.md)
-- [**PDF 文档**](arxiv.pdf)
+- [**PDF 文档**](refer/papers/arxiv.pdf)
 
 Xloom 仅用于已授权的安全研究。工具以当前用户的系统权限执行，研究结论需要结合原始证据复核。
 
