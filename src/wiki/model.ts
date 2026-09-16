@@ -4,7 +4,7 @@ import type { BoardSnapshot, Execution } from "../types.js";
 import { knowledgeRecord } from "../knowledge/model.js";
 import { cvssIssues, projectCvss } from "../scoring/cvss.js";
 import { observationConflicts } from "../observations/changes.js";
-import { hypothesisKey } from "../loop/attempts.js";
+import { attemptSources, observationRelations } from "../observations/relations.js";
 import { factBasisReviews } from "../loop/fact-basis.js";
 
 const text = (max: number) => z.string().trim().min(1).max(max).refine(value => !value.includes("\0"), "Must not contain NUL characters");
@@ -59,18 +59,14 @@ const source = (kind: WikiSource["kind"], ids: string[]): WikiSource[] => ids.ma
 type PublicRecord = { value: object; dependencies: WikiSource[] };
 function recordScope(board: BoardSnapshot) {
   const index = <T extends { id: string }>(items: T[]) => new Map(items.map(item => [item.id, item]));
-  const replacedBy = new Map<string, string[]>(), attemptsByEvidence = new Map<string, string[]>(), attemptsByHypothesis = new Map<string, string[]>();
+  const replacedBy = new Map<string, string[]>();
   const counterSteps = new Map<string, BoardSnapshot["steps"]>();
   const add = <T>(map: Map<string, T[]>, key: string, value: T) => { const items = map.get(key) ?? []; items.push(value); map.set(key, items); };
   for (const fact of board.facts) if (fact.supersedes) add(replacedBy, fact.supersedes, fact.id);
-  for (const attempt of board.attempts ?? []) {
-    for (const id of new Set(attempt.evidenceIds)) add(attemptsByEvidence, id, attempt.id);
-    add(attemptsByHypothesis, hypothesisKey(attempt.hypothesis), attempt.id);
-  }
   for (const step of board.steps) if (step.combination?.counterEvidence?.length)
     for (const id of new Set([...step.from, ...step.combination.requires])) add(counterSteps, id, step);
   return { goals: index(board.goals), steps: index(board.steps), facts: index(board.facts), findings: index(board.findings), evidence: index(board.evidence),
-    attempts: index(board.attempts ?? []), replacedBy, attemptsByEvidence, attemptsByHypothesis, counterSteps, factReviews: factBasisReviews(board),
+    attempts: index(board.attempts ?? []), replacedBy, relations: observationRelations(board), counterSteps, factReviews: factBasisReviews(board),
     conflicts: observationConflicts(board), records: new Map<string, PublicRecord | undefined>(),
     blocks: wikiBlocks(board.wikiPages ?? []), issues: new Map<WikiRevision, (WikiIssue & { blockId: string })[]>() };
 }
@@ -117,7 +113,7 @@ function projectWikiRecord(board: BoardSnapshot, ref: WikiSource, scope: ReturnT
       scope: combination.scope, stateVersion: combination.stateVersion, expectedCapability: combination.expectedCapability, counterEvidence: combination.counterEvidence } : {}) };
     const counterContexts = (scope.counterSteps.get(r.id) ?? [])
       .map(step => ({ stepId: step.id, scope: step.combination!.scope, stateVersion: step.combination!.stateVersion, counterEvidence: step.combination!.counterEvidence! }));
-    const attempts = [...new Set(r.evidenceIds.flatMap(id => scope.attemptsByEvidence.get(id) ?? []))].sort();
+    const attempts = scope.relations.fact(r);
     const conflicts = scope.conflicts;
     const basisReview = scope.factReviews.get(r.id);
     const reviewIssues = [...(replacedBy.length ? ["source_replaced"] : []), ...(basisReview ? ["basis_review_required"] : []), ...(attempts.some(id => conflicts.has(id)) ? ["observation_conflict"] : [])];
@@ -129,7 +125,7 @@ function projectWikiRecord(board: BoardSnapshot, ref: WikiSource, scope: ReturnT
   if (ref.kind === "finding") {
     const r = scope.findings.get(ref.id);
     if (!r) return;
-    const attempts = [...new Set([...(scope.attemptsByHypothesis.get(hypothesisKey(r.key)) ?? []), ...r.evidenceIds.flatMap(id => scope.attemptsByEvidence.get(id) ?? [])])].sort();
+    const attempts = [...scope.relations.finding(r).attemptIds].sort();
     const impact = r.impact && { capability: r.impact.capability, object: r.impact.object, result: r.impact.result, scope: r.impact.scope, prerequisites: r.impact.prerequisites };
     return { value: { id: r.id, key: r.key, title: r.title, target: r.target, status: r.status, rating: r.rating, factIds: r.factIds,
       evidenceIds: r.evidenceIds, next: r.next, review: r.review, impact, pocEvidenceId: r.pocEvidenceId, attempts,
@@ -142,9 +138,14 @@ function projectWikiRecord(board: BoardSnapshot, ref: WikiSource, scope: ReturnT
     return r && { value: { id: r.id, stepId: r.stepId, path: r.path, pathBase: r.pathBase, sha256: r.sha256, bytes: r.bytes, description: r.description }, dependencies: [] };
   }
   const r = scope.attempts.get(ref.id);
+  if (!r) return;
   const conflicts = scope.conflicts.get(ref.id) ?? [];
-  return r && { value: { id: r.id, stepId: r.stepId, hypothesis: r.hypothesis, scope: r.scope, identity: r.identity, stateVersion: r.stateVersion,
+  const sources = attemptSources(r);
+  // Preserve legacy stamps when explicit provenance adds no information.
+  const hasSourcePairs = wikiDigest(sources) !== wikiDigest(attemptSources({ stepId: r.stepId, evidenceIds: r.evidenceIds }));
+  return { value: { id: r.id, stepId: r.stepId, hypothesis: r.hypothesis, scope: r.scope, identity: r.identity, stateVersion: r.stateVersion,
     baseline: r.baseline, changedVariable: r.changedVariable, outcome: r.outcome, observation: r.observation, evidenceIds: r.evidenceIds,
+    ...(hasSourcePairs ? { sources } : {}),
     ...(conflicts.length ? { conflicts, reviewIssues: ["observation_conflict"] } : {}) }, dependencies: [...source("evidence", r.evidenceIds), ...source("attempt", conflicts)] };
 }
 

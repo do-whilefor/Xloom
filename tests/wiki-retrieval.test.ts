@@ -10,7 +10,7 @@ import { buildRunPrompt } from "../src/runtime/prompts.js";
 function fixture(): BoardSnapshot {
   const board: BoardSnapshot = { revision: 4, config: defaultConfig("Inspect export authorization"), status: "running", outcome: null, reason: "",
     goals: [{ id: "G0", parentId: null, description: "Inspect export authorization", status: "active", factIds: [] }], steps: [],
-    facts: [{ id: "F-old", stepId: null, description: "Export job returns an identifier; report download remains unverified.", evidenceIds: ["E-old"] }],
+    facts: [{ id: "F-old", stepId: "S-origin", description: "Export job returns an identifier; report download remains unverified.", evidenceIds: ["E-old"] }],
     evidence: [{ id: "E-old", path: "evidence/fixture.bin", pathBase: "task", sha256: "a".repeat(64), bytes: 4, description: "Original fixture response", stepId: "S-origin", runId: "PRIVATE_RUN", excerpt: "PRIVATE_RAW_BODY" }],
     findings: [], hints: [], attempts: [], usage: { input: 0, output: 0, cost: 0 }, completedSteps: 0, noProgressCount: 0, lastMetaStep: 0, lastMetaRevision: 0 };
   board.steps.push({ id: "S-origin", goalId: "G0", from: [], description: "Observe report job", successSignal: "Job identifier", evidencePlan: "Preserve original", priority: 1,

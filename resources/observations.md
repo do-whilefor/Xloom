@@ -31,6 +31,18 @@ Under the same declared conditions, opposing `supports`/`refutes` become conflic
 candidates; different identities/states stay separate. Different observation text
 is retained even when the outcome repeats; it does not earn new experiment progress.
 
+Identical original bytes share an Evidence ID; that alone does not link experiments.
+Facts locate Attempts through their producing Step and the Evidence cited by
+that Step. Merged Attempts retain these Step/Evidence pairs. Findings locate
+Attempts through their hypothesis key or their explicit and causal Facts, including
+repeated observations under the same declared conditions. Evidence-only support
+does not attach another experiment merely because it reuses the same bytes.
+The archive's first Step remains navigation in native retrieval, not an inherited
+experiment prerequisite. Changes to the referenced archive hash, size or location
+still require review.
+Older merged Attempts without source pairs fall back to their retained producing
+Step; previously lost origins cannot be reconstructed automatically.
+
 New Attempts and changed old sources request fresh metacognitive review on Decide.
 Legacy new Facts still receive the ordinary Decide boundary; Fact replacements
 retain their existing fresh review. Checkpoint changes survive yield and restart.

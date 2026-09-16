@@ -71,7 +71,9 @@ function collectDocuments(board: BoardSnapshot) {
     const navigation: WikiSource[] = [];
     if ("goalId" in item) navigation.push({ kind: "goal", id: item.goalId });
     if ("parentId" in item && item.parentId) navigation.push({ kind: "goal", id: item.parentId });
-    if ("stepId" in item && item.stepId) sources.push({ kind: "step", id: item.stepId });
+    // Content-addressed Evidence retains its first archive Step, not every
+    // later experiment's causal origin. Keep that locator out of source closure.
+    if ("stepId" in item && item.stepId) (kind === "evidence" ? navigation : sources).push({ kind: "step", id: item.stepId });
     const unique = [...new Map(sources.map(source => [refKey(source), source])).values()];
     documents.push({ ref, title, text: JSON.stringify(record.value), path: `pages/${wikiFilename(kind, item.id)}`, sources: unique, ...(navigation.length ? { navigation } : {}),
       issues: [...unique.filter(source => !wikiRecord(board, source)).map(source => ({ code: "source_missing", source })),

@@ -11,7 +11,7 @@ import { defaultLoopPolicy } from "../src/loop/policy.js";
 import { defaultConfig } from "../src/config.js";
 import { createTaskReader } from "../src/wiki/read.js";
 import { createWorkspaceReadTool } from "../src/runtime/read.js";
-import { wikiRecord } from "../src/wiki/model.js";
+import { wikiDigest, wikiRecord } from "../src/wiki/model.js";
 import type { Attempt, BoardSnapshot } from "../src/types.js";
 
 const roots: string[] = [];
@@ -132,6 +132,107 @@ describe("task-native comparison reader", () => {
 });
 
 describe("minimal observation change adapter", () => {
+  function reviewedBoard(): BoardSnapshot {
+    const snapshot = board();
+    snapshot.evidence = [{ id: "E-one", path: "evidence/one.json", pathBase: "task", sha256: "a".repeat(64), bytes: 1,
+      description: "Shared source bytes", stepId: "S-one", runId: "R-one" }];
+    snapshot.facts = [{ id: "F-one", stepId: "S-one", description: "Recorded result for object A", evidenceIds: ["E-one"] }];
+    snapshot.attempts = [attempt("A-one")];
+    snapshot.findings = [{ id: "V-one", key: "reviewed-summary", target: "object-A", title: "Reviewed result", status: "closed", rating: "unrated",
+      factIds: ["F-one"], evidenceIds: ["E-one"], next: "Reopen for related observations", review: "Historical review" }];
+    return snapshot;
+  }
+  it("preserves legacy Wiki signatures for equivalent implicit and explicit Attempt sources", () => {
+    const before = reviewedBoard();
+    before.evidence.push({ ...before.evidence[0]!, id: "E-two", path: "evidence/two.json", sha256: "b".repeat(64) });
+    before.attempts![0]!.evidenceIds.push("E-two");
+    const after = structuredClone(before);
+    after.attempts![0]!.sources = [{ stepId: "S-one", evidenceIds: ["E-two", "E-one", "E-one"] },
+      { stepId: "S-one", evidenceIds: ["E-two"] }];
+    const previous = wikiRecord(before, { kind: "attempt", id: "A-one" })!.value;
+    const current = wikiRecord(after, { kind: "attempt", id: "A-one" })!.value;
+    expect(previous).not.toHaveProperty("sources");
+    expect(current).not.toHaveProperty("sources");
+    expect(wikiDigest(current)).toBe(wikiDigest(previous));
+    expect(observationChanges(before, after)).toEqual([]);
+    invalidateObservationReviews(before, after);
+    expect(after.findings).toEqual(before.findings);
+  });
+  it("retains the old Fact relationship when an Attempt moves its source pairing to another Step", () => {
+    const before = reviewedBoard();
+    before.findings.push({ ...before.findings[0]!, id: "V-direct", key: "direct-source", factIds: [] });
+    const after = structuredClone(before);
+    after.attempts![0]!.sources = [{ stepId: "S-unrelated", evidenceIds: ["E-one"] }];
+    expect(observationChanges(before, after)).toEqual([{ kind: "source_changed", attemptIds: ["A-one"], factIds: [], evidenceIds: ["E-one"] }]);
+    const previous = wikiRecord(before, { kind: "attempt", id: "A-one" })!.value;
+    const current = wikiRecord(after, { kind: "attempt", id: "A-one" })!.value;
+    expect(current).toHaveProperty("sources", [{ stepId: "S-unrelated", evidenceIds: ["E-one"] }]);
+    expect(wikiDigest(current)).not.toBe(wikiDigest(previous));
+    invalidateObservationReviews(before, after);
+    expect(after.findings[0]!.observationReview).toEqual({ kinds: ["source_changed"], attemptIds: ["A-one"], factIds: [], evidenceIds: ["E-one"] });
+    expect(after.findings[1]).toEqual(before.findings[1]);
+    expect(wikiRecord(after, { kind: "finding", id: "V-direct" })!.dependencies).not.toContainEqual({ kind: "attempt", id: "A-one" });
+  });
+  it("retains a prior hypothesis relationship after an Attempt changes to a different hypothesis", () => {
+    const before = reviewedBoard();
+    before.findings[0]!.key = "read-object"; before.findings[0]!.factIds = []; before.findings[0]!.evidenceIds = [];
+    before.findings.push({ ...before.findings[0]!, id: "V-direct", key: "direct-source", evidenceIds: ["E-one"] });
+    const after = structuredClone(before); after.attempts![0]!.hypothesis = "unrelated-hypothesis";
+    expect(observationChanges(before, after)).toEqual([{ kind: "new_observation", attemptIds: ["A-one"], factIds: [], evidenceIds: ["E-one"] }]);
+    invalidateObservationReviews(before, after);
+    expect(after.findings[0]!.observationReview).toEqual({ kinds: ["new_observation"], attemptIds: ["A-one"], factIds: [], evidenceIds: ["E-one"] });
+    expect(after.findings[1]).toEqual(before.findings[1]);
+    expect(wikiRecord(after, { kind: "finding", id: "V-direct" })!.dependencies).not.toContainEqual({ kind: "attempt", id: "A-one" });
+  });
+  it.each(["attempt", "fact", "both"])("does not invalidate reviewed support when an unrelated %s reuses its Evidence", added => {
+    const before = reviewedBoard(), after = structuredClone(before);
+    if (added !== "fact") after.attempts!.push(attempt("A-other", { hypothesis: "other-object", scope: "object-B", identity: "account-B", stepId: "S-other" }));
+    if (added !== "attempt") after.facts.push({ id: "F-other", stepId: "S-other", description: "Independent result for object B", evidenceIds: ["E-one"] });
+    invalidateObservationReviews(before, after);
+    expect(after.findings).toEqual(before.findings);
+    expect(wikiRecord(after, { kind: "fact", id: "F-one" })).toEqual(wikiRecord(before, { kind: "fact", id: "F-one" }));
+    expect(wikiRecord(after, { kind: "finding", id: "V-one" })).toEqual(wikiRecord(before, { kind: "finding", id: "V-one" }));
+  });
+  it("does not invalidate a review when an unrelated Attempt adds a source alongside shared Evidence", () => {
+    const before = reviewedBoard();
+    before.attempts!.push(attempt("A-other", { hypothesis: "other-object", scope: "object-B", stepId: "S-other" }));
+    const after = structuredClone(before);
+    after.evidence.push({ ...after.evidence[0]!, id: "E-new", path: "evidence/new.json", sha256: "b".repeat(64), stepId: "S-other" });
+    after.attempts![1]!.evidenceIds.push("E-new");
+    expect(observationChanges(before, after)).toContainEqual({ kind: "source_changed", attemptIds: ["A-other"], factIds: [], evidenceIds: ["E-new", "E-one"] });
+    invalidateObservationReviews(before, after);
+    expect(after.findings).toEqual(before.findings);
+    expect(wikiRecord(after, { kind: "fact", id: "F-one" })).toEqual(wikiRecord(before, { kind: "fact", id: "F-one" }));
+  });
+  it.each(["changed", "deleted"])("invalidates direct-Evidence support when its source is %s without attaching unrelated experiments", change => {
+    const before = reviewedBoard();
+    before.facts = []; before.findings[0]!.factIds = [];
+    before.evidence.push({ ...before.evidence[0]!, id: "E-other", path: "evidence/other.json", sha256: "b".repeat(64), stepId: "S-other" });
+    before.attempts = [attempt("A-other", { hypothesis: "other-object", stepId: "S-other", evidenceIds: ["E-one", "E-other"] })];
+    const after = structuredClone(before);
+    if (change === "changed") after.evidence[0]!.sha256 = "c".repeat(64);
+    else after.evidence.shift();
+    invalidateObservationReviews(before, after);
+    expect(after.findings[0]!.observationReview).toEqual({ kinds: ["source_changed"], attemptIds: [], factIds: [], evidenceIds: ["E-one"] });
+    expect(after.findings[0]!.evidenceIds).toEqual(["E-one"]);
+  });
+  it.each(["fact", "hypothesis"])("retains a deleted Attempt's %s relationship when requiring a fresh review", relationship => {
+    const before = reviewedBoard();
+    if (relationship === "hypothesis") {
+      before.findings[0]!.key = "read-object";
+      before.findings[0]!.factIds = []; before.findings[0]!.evidenceIds = [];
+    }
+    const after = structuredClone(before); after.attempts = [];
+    invalidateObservationReviews(before, after);
+    expect(after.findings[0]!.observationReview).toEqual({ kinds: ["source_changed"], attemptIds: ["A-one"], factIds: [], evidenceIds: ["E-one"] });
+  });
+  it("invalidates an explicitly superseded Fact even when a different Step reuses the same Evidence", () => {
+    const before = reviewedBoard(), after = structuredClone(before);
+    after.facts.push({ id: "F-corrected", stepId: "S-correct", description: "Corrected interpretation", supersedes: "F-one", evidenceIds: ["E-one"] });
+    invalidateObservationReviews(before, after);
+    expect(after.findings[0]!.observationReview).toEqual({ kinds: ["source_changed"], attemptIds: [], factIds: ["F-corrected", "F-one"], evidenceIds: ["E-one"] });
+    expect(after.findings[0]!.factIds).toEqual(["F-one"]);
+  });
   it("uses the Store's hypothesis normalization when locating an affected Finding", () => {
     const before = board(); before.findings = [{ id: "V1", key: "fixture key", target: "fixture", title: "Fixture", status: "closed", rating: "unrated",
       factIds: [], evidenceIds: [], next: "reopen", review: "Historical review" }];

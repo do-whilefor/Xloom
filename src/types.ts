@@ -82,6 +82,8 @@ export interface AttemptProposal {
 }
 export interface Attempt extends Omit<AttemptProposal, "evidenceRefs"> {
   id: string; evidenceIds: string[]; conditionKey: string; outcomeKey: string; runId: string; stepId: string;
+  /** Store-owned provenance for observations merged across producing Steps. */
+  sources?: { stepId: string; evidenceIds: string[] }[];
 }
 export interface BoardSnapshot {
   revision: number; config: ProjectConfig; status: RunStatus; outcome: Outcome | null; reason: string;

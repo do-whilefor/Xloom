@@ -1,5 +1,6 @@
 import type { Attempt, BoardSnapshot, OuterLoopTrigger } from "../types.js";
-import { attemptKeys, hypothesisKey } from "../loop/attempts.js";
+import { attemptKeys } from "../loop/attempts.js";
+import { attemptSources, observationRelations } from "./relations.js";
 import { changedPaths } from "./compare.js";
 
 export interface ObservationChange {
@@ -49,7 +50,8 @@ export function observationChanges(before: BoardSnapshot, after: BoardSnapshot):
   for (const attempt of after.attempts ?? []) {
     const previous = priorAttempts.get(attempt.id);
     if (!previous || different([attemptKeys(previous), previous.observation], [attemptKeys(attempt), attempt.observation])) add("new_observation", [attempt]);
-    if (previous && different(priorSources(previous.evidenceIds), currentSources(attempt.evidenceIds))) add("source_changed", [attempt]);
+    if (previous && different([priorSources(previous.evidenceIds), attemptSources(previous)],
+      [currentSources(attempt.evidenceIds), attemptSources(attempt)])) add("source_changed", [attempt]);
   }
   // Compare each condition group once, not every historical pair on each commit.
   for (const [key, group] of conflicts) if (group.supports.length && group.refutes.length) {
@@ -60,8 +62,8 @@ export function observationChanges(before: BoardSnapshot, after: BoardSnapshot):
   for (const fact of after.facts) {
     const previous = priorFacts.get(fact.id);
     if (!previous && fact.evidenceIds.length) add(fact.supersedes ? "source_changed" : "new_observation", [], [fact.id, ...fact.supersedes ? [fact.supersedes] : []], fact.evidenceIds);
-    else if (previous && different([previous.description, previous.supersedes ?? null, priorSources(previous.evidenceIds)],
-      [fact.description, fact.supersedes ?? null, currentSources(fact.evidenceIds)])) add("source_changed", [], [fact.id], fact.evidenceIds);
+    else if (previous && different([previous.description, previous.stepId, previous.supersedes ?? null, priorSources(previous.evidenceIds)],
+      [fact.description, fact.stepId, fact.supersedes ?? null, currentSources(fact.evidenceIds)])) add("source_changed", [], [fact.id], fact.evidenceIds);
   }
   for (const attempt of before.attempts ?? []) if (!byAttempt.has(attempt.id)) add("source_changed", [attempt]);
   const facts = new Set(after.facts.map(item => item.id));
@@ -87,21 +89,19 @@ export function observationReviewTrigger(before: BoardSnapshot, after: BoardSnap
  * is affected. Candidate sources are not silently attached as Finding evidence. */
 export function invalidateObservationReviews(before: BoardSnapshot, board: BoardSnapshot): void {
   const changes = observationChanges(before, board);
-  const attempts = new Map([...(before.attempts ?? []), ...(board.attempts ?? [])].map(item => [item.id, item]));
-  const facts = new Map([...before.facts, ...board.facts].map(item => [item.id, item]));
-  const steps = new Map([...before.steps, ...board.steps].map(item => [item.id, item]));
+  const prior = observationRelations(before), current = observationRelations(board);
+  const priorFindings = new Map(before.findings.map(item => [item.id, item]));
+  const priorSources = signatures(before), currentSources = signatures(board);
+  // A change event may contain unchanged shared bytes alongside new sources.
+  // Only a delta of the Evidence record itself can invalidate by Evidence ID.
+  const changedEvidence = before.evidence.filter(item => different(priorSources([item.id]), currentSources([item.id]))).map(item => item.id);
   for (const finding of board.findings) {
     if (!finding.review && !finding.observationReview) continue;
-    const sourceFacts = new Set(finding.factIds), sourceEvidence = new Set(finding.evidenceIds), pending = [...sourceFacts];
-    for (let i = 0; i < pending.length; i++) {
-      const fact = facts.get(pending[i]!); if (!fact) continue;
-      fact.evidenceIds.forEach(id => sourceEvidence.add(id));
-      const step = fact.stepId ? steps.get(fact.stepId) : undefined;
-      for (const id of [...step?.from ?? [], ...step?.combination?.requires ?? [], ...step?.combination?.counterEvidence ?? []])
-        if (!sourceFacts.has(id)) { sourceFacts.add(id); pending.push(id); }
-    }
-    const affected = changes.filter(change => change.factIds.some(id => sourceFacts.has(id)) || change.evidenceIds.some(id => sourceEvidence.has(id))
-      || change.attemptIds.some(id => { const attempt = attempts.get(id); return attempt && hypothesisKey(attempt.hypothesis) === hypothesisKey(finding.key); }));
+    const old = prior.finding(priorFindings.get(finding.id) ?? finding), next = current.finding(finding);
+    const affected = changes.filter(change => change.factIds.some(id => old.factIds.has(id) || next.factIds.has(id))
+      || change.attemptIds.some(id => old.attemptIds.has(id) || next.attemptIds.has(id)));
+    const evidenceIds = changedEvidence.filter(id => old.evidenceIds.has(id) || next.evidenceIds.has(id));
+    if (evidenceIds.length) affected.push({ kind: "source_changed", attemptIds: [], factIds: [], evidenceIds });
     if (affected.length) finding.observationReview = { kinds: unique([...finding.observationReview?.kinds ?? [], ...affected.map(item => item.kind)]) as ObservationChange["kind"][],
       attemptIds: unique([...finding.observationReview?.attemptIds ?? [], ...affected.flatMap(item => item.attemptIds)]),
       factIds: unique([...finding.observationReview?.factIds ?? [], ...affected.flatMap(item => item.factIds)]),

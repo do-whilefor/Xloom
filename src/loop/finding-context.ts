@@ -1,7 +1,9 @@
 import { evidencePath } from "../paths.js";
 import { cvssIssues } from "../scoring/cvss.js";
+import { observationRelations } from "../observations/relations.js";
 import type { Attempt, BoardSnapshot, Evidence, Fact, Finding, Step } from "../types.js";
 import type { BlackboardContext, ContextAttempt, FactIndexEntry } from "./context.js";
+import { hypothesisKey } from "./attempts.js";
 
 interface Relation {
   kind: "shared_finding" | "source_step" | "referencing_step";
@@ -19,7 +21,7 @@ interface FindingView {
   related: Relation[];
   revisions: { previous: string; replacement: string }[];
   conditions: { stepId: string; scope: string; stateVersion: string; missing: string[]; declaredCounterEvidence: string[] }[];
-  attempts: { id: string; via: "hypothesis_key" | "linked_evidence" }[];
+  attempts: { id: string; via: "hypothesis_key" | "linked_fact" }[];
   issues: { kind: "missing_fact" | "missing_evidence" | "missing_step" | "poc_not_linked"; id: string }[];
   unrecorded: string[];
   omitted?: { related: number; conditions: number; attempts: number };
@@ -45,6 +47,7 @@ export function projectFindingContext(board: BoardSnapshot, context: BlackboardC
   const facts = new Map(board.facts.map(fact => [fact.id, fact]));
   const evidence = new Map(board.evidence.map(item => [item.id, item]));
   const steps = new Map(board.steps.map(step => [step.id, step]));
+  const observations = observationRelations(board);
   const replacements = new Map<string, Fact[]>();
   const factsByStep = new Map<string, Fact[]>();
   const evidenceByStep = new Map<string, Evidence[]>();
@@ -184,9 +187,10 @@ export function projectFindingContext(board: BoardSnapshot, context: BlackboardC
     }
     if (!conditionCount) view.unrecorded.push("combination_conditions");
 
-    const matchingAttempts = (board.attempts ?? []).filter(attempt => attempt.hypothesis === finding.key || attempt.evidenceIds.some(id => linkedEvidence.has(id)));
+    const attemptIds = observations.finding(finding).attemptIds;
+    const matchingAttempts = (board.attempts ?? []).filter(attempt => attemptIds.has(attempt.id));
     for (const attempt of matchingAttempts.slice(-limit).reverse()) {
-      view.attempts.push({ id: attempt.id, via: attempt.hypothesis === finding.key ? "hypothesis_key" : "linked_evidence" });
+      view.attempts.push({ id: attempt.id, via: hypothesisKey(attempt.hypothesis) === hypothesisKey(finding.key) ? "hypothesis_key" : "linked_fact" });
       attempt.evidenceIds.forEach(locateEvidence);
       if (!visibleAttempts.has(attempt.id) && !extraAttempts.has(attempt.id)) extraAttempts.set(attempt.id, attemptView(attempt));
     }

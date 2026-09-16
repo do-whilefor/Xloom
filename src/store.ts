@@ -10,6 +10,7 @@ import { attemptKeys, legacyProgressMarkers } from "./loop/attempts.js";
 import { assertGoalSatisfactionFacts, assertRootGoalUpdate, assertSatisfiedRoot, inspectGoalDeclarations } from "./loop/goals.js";
 import { findingReviewErrors } from "./loop/reviews.js";
 import { invalidateObservationReviews } from "./observations/changes.js";
+import { attemptSources } from "./observations/relations.js";
 import { evidenceNavigationRecords } from "./loop/finding-context.js";
 import { applyWikiPages, type WikiPageProposal } from "./wiki/model.js";
 import { writeWiki } from "./wiki/projection.js";
@@ -399,7 +400,9 @@ export class BlackboardStore {
   }
 
   private applyExecutionRecords(board: BoardSnapshot, runId: string, step: Step, output: Execution): { progress: boolean; wikiPages: WikiPageProposal[]; refs: ExecutionRefs } {
-      const previous = { ...board, facts: [...board.facts], evidence: [...board.evidence], attempts: board.attempts?.map(item => ({ ...item, evidenceIds: [...item.evidenceIds] })) };
+      const previous = { ...board, facts: [...board.facts], evidence: [...board.evidence],
+        findings: board.findings.map(item => ({ ...item, factIds: [...item.factIds], evidenceIds: [...item.evidenceIds] })),
+        attempts: board.attempts?.map(item => ({ ...item, evidenceIds: [...item.evidenceIds] })) };
       const before = legacyProgressMarkers(board);
       const evidenceMap = new Map<string, string>();
       const factMap = new Map<string, string>();
@@ -471,7 +474,11 @@ export class BlackboardStore {
         const attempts = board.attempts ??= [];
         const knownOutcome = attempts.some(item => item.outcomeKey === keys.outcomeKey);
         const existing = attempts.find(item => item.outcomeKey === keys.outcomeKey && item.observation === proposal.observation);
-        if (existing) existing.evidenceIds = union(existing.evidenceIds, evidenceIds);
+        if (existing) {
+          const sources = [...attemptSources(existing), { stepId: step.id, evidenceIds }];
+          existing.evidenceIds = union(existing.evidenceIds, evidenceIds);
+          existing.sources = attemptSources({ ...existing, sources });
+        }
         else {
           const { evidenceRefs: _localRefs, ...attempt } = proposal;
           attempts.push({ ...attempt, ...keys, id: id("A"), runId, stepId: step.id, evidenceIds });

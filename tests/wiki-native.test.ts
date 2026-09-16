@@ -27,14 +27,20 @@ function setup() {
 }
 
 describe("native explicit search and capability discovery", () => {
-  it("provides a working continuation for empty evidence packages and distinguishes budget exhaustion from missing sources", () => {
+  it("provides a working continuation for deferred Fact source packages and distinguishes budget exhaustion from missing sources", () => {
     const { root, store } = setup(); const board = store.snapshot();
     board.steps[0]!.evidencePlan = "A long recorded evidence plan with required comparisons. ".repeat(400);
     const read = createTaskReader(root, { dataDir: store.dataDir, snapshot: () => board });
-    const ref = board.evidence[0]!;
-    const path = `xloom://record?kind=evidence&id=${ref.id}`;
+    const metadata = read(`xloom://record?kind=evidence&id=${board.evidence[0]!.id}`);
+    expect(metadata).toMatchObject({ complete: false, status: "source_package_deferred" });
+    expect(metadata.records).toContainEqual(expect.objectContaining({ ref: { kind: "evidence", id: board.evidence[0]!.id },
+      navigation: [{ kind: "step", id: board.steps[0]!.id }] }));
+    expect(metadata.records.some((record: any) => record.ref.kind === "fact")).toBe(false);
+    expect(metadata.deferredCount).toBeGreaterThan(0);
+    const ref = board.facts[0]!;
+    const path = `xloom://record?kind=fact&id=${ref.id}`;
     const first = read(path) as ReturnType<typeof read> & { nextReadPath: string };
-    expect(first).toMatchObject({ hits: [], records: [], deferredCount: 3, complete: false, status: "source_package_deferred", retrievalProgress: "resolve_incomplete_retrieval" });
+    expect(first).toMatchObject({ hits: [], records: [], deferredCount: 1, complete: false, status: "source_package_deferred", retrievalProgress: "resolve_incomplete_retrieval" });
     expect(retrievalFeedback(first)).toContain(ref.id);
     expect(retrievalFeedback(first)).toContain("来源包超过本次预算");
     expect(retrievalFeedback(first)).toContain(first.nextReadPath);

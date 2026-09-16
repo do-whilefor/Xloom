@@ -114,6 +114,48 @@ describe("Finding evidence navigation", () => {
     expect(input.snapshot.findings[0]!.status).toBe("technical_hit");
   });
 
+  it("excludes an unrelated Step's Attempt that reuses the same Evidence bytes", () => {
+    const input = request();
+    input.snapshot.attempts = [attempt("A-unrelated", "S2", "independent-hypothesis", ["E0"])];
+    const item = view(input).items.find(item => item.findingId === "V0")!;
+    expect(item.attempts).toEqual([]);
+    expect(item.unrecorded).toContain("structured_attempts");
+  });
+
+  it("locates an Attempt through a linked Fact's producing Step and Evidence", () => {
+    const input = request();
+    input.snapshot.findings[0]!.evidenceIds = [];
+    input.snapshot.attempts = [attempt("A-source", "S0", "supporting-control", ["E0"])];
+    expect(view(input).items.find(item => item.findingId === "V0")!.attempts).toEqual([{ id: "A-source", via: "linked_fact" }]);
+    expect(input.snapshot.findings[0]!.evidenceIds).toEqual([]);
+  });
+
+  it("includes Attempts behind a causal Fact prerequisite without linking shared-byte experiments", () => {
+    const input = request();
+    input.snapshot.steps[0]!.from = ["F3"];
+    input.snapshot.attempts = [attempt("A-prerequisite", "S3", "prerequisite-control", ["E3"]),
+      attempt("A-unrelated", "S2", "independent-hypothesis", ["E0"])];
+    expect(view(input).items.find(item => item.findingId === "V0")!.attempts).toEqual([{ id: "A-prerequisite", via: "linked_fact" }]);
+  });
+
+  it("matches normalized hypotheses across Steps for Evidence-only Findings", () => {
+    const input = request("metacog");
+    input.snapshot.findings = [finding("V0", [], ["E0"])];
+    input.snapshot.findings[0]!.key = "key v0";
+    input.snapshot.attempts = [attempt("A-shared-bytes", "S0", "independent-hypothesis", ["E0"]),
+      attempt("A-hypothesis", "S2", "  KEY   V0 \n", ["E2"])];
+    expect(view(input).items[0]!.attempts).toEqual([{ id: "A-hypothesis", via: "hypothesis_key" }]);
+  });
+
+  it("retains cross-Step contrary Attempts under the linked Fact's recorded conditions", () => {
+    const input = request();
+    input.snapshot.attempts = [{ ...attempt("A-source", "S0", "supporting-control", ["E0"]), outcome: "supports" },
+      attempt("A-contrary", "S2", "supporting-control", ["E2"])];
+    expect(view(input).items.find(item => item.findingId === "V0")!.attempts).toEqual([
+      { id: "A-contrary", via: "linked_fact" }, { id: "A-source", via: "linked_fact" },
+    ]);
+  });
+
   it("reports missing records and invalid PoC links without treating unrecorded controls as absent", () => {
     const input = request();
     input.snapshot.findings[0]!.factIds.push("F-missing");

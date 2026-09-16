@@ -43,11 +43,11 @@ type Page = { type: string; complete: boolean; records: ({ ref: { kind: string; 
 describe("source package pagination", () => {
   it("escapes the logged empty-package loop, retaining every condition and source exactly once across pages", () => {
     const f = setup(), before = JSON.stringify(f.board);
-    const anchors = [{ kind: "evidence" as const, id: f.board.evidence[0]!.id },
-      ...f.board.facts.filter(fact => fact.evidenceIds.includes(f.board.evidence[0]!.id)).map(fact => ({ kind: "fact" as const, id: fact.id }))];
+    // The Fact owns the causal package; an Evidence archive's Step is navigation.
+    const anchors = [{ kind: "fact" as const, id: f.board.facts[0]!.id }];
     const full = retrieveWiki(f.board, f.context.dataDir, f.root, "", { anchors, limit: anchors.length });
     expect(JSON.stringify(full).length).toBeGreaterThan(64000);
-    const first = f.read(f.path) as unknown as { complete: boolean; nextReadPath: string; records: object[] };
+    const first = f.read(`xloom://record?kind=fact&id=${anchors[0]!.id}`) as unknown as { complete: boolean; nextReadPath: string; records: object[] };
     expect(first).toMatchObject({ complete: false, records: [] });
     let path: string | undefined = first.nextReadPath;
     const records = new Map<string, object>(); let count = 0; let last: Page | undefined;
