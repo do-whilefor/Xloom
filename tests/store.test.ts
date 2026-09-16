@@ -525,7 +525,7 @@ describe("evidence boundaries and integrity", () => {
 });
 
 describe("findings and outcome gates", () => {
-  it("deduplicates finding keys, facts and evidence while retaining unrated technical hits", () => {
+  it("shares finding keys and evidence while preserving repeated Facts from distinct Steps without crediting progress", () => {
     const store = openStore();
     const first = produceHit(store);
     const { runId } = claimStep(store, "A distinct variable with existing evidence");
@@ -535,9 +535,12 @@ describe("findings and outcome gates", () => {
       findings: [{ key: "  FIXTURE-OWNERSHIP ", title: "Repeated lead", target: "FIXTURE IDENTITY B × OBJECT A", status: "lead", factRefs: ["f2"], evidenceRefs: [first.evidence[0].id], next: "Validate fixture impact" }],
     }, usage);
     expect(board.evidence).toHaveLength(1);
-    expect(board.facts).toHaveLength(1);
+    expect(board.facts).toHaveLength(2);
+    expect(board.facts[0].stepId).not.toBe(board.facts[1].stepId);
+    expect(board.facts[0].evidenceIds).toEqual(board.facts[1].evidenceIds);
     expect(board.findings).toHaveLength(1);
     expect(board.findings[0]).toMatchObject({ id: first.findings[0].id, status: "technical_hit", rating: "unrated" });
+    expect(board.findings[0].factIds).toEqual(board.facts.map(fact => fact.id));
     expect(board.noProgressCount).toBe(1);
   });
 

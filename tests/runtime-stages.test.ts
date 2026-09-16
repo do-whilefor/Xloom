@@ -1177,8 +1177,9 @@ describe("durable Execute checkpoints through the real Pi tool loop", () => {
     assertExactUsage(test);
   });
 
-  it("returns reusable committed IDs when a checkpoint deduplicates evidence and facts from another run", async () => {
+  it("returns distinct Fact origins and shared Evidence IDs when another Step checkpoints identical observations", async () => {
     let firstIds: { fact: string; evidence: string } | undefined;
+    let secondIds: { fact: string; evidence: string } | undefined;
     const test = setup((run, context, input) => {
       if (run.channel !== "offline-execute") {
         if (input.blackboard.completedSteps === 1) return json({ summary: "Recheck the same synthetic fixture in another Execute run", steps: [{
@@ -1198,10 +1199,12 @@ describe("durable Execute checkpoints through the real Pi tool loop", () => {
         firstIds = ids;
         return json({ summary: "First synthetic observation has been committed", result: "done" });
       }
-      expect(ids).toEqual(firstIds);
-      expect(test.controller.snapshot().facts).toHaveLength(1);
+      secondIds = ids;
+      expect(ids.fact).not.toBe(firstIds!.fact);
+      expect(ids.evidence).toBe(firstIds!.evidence);
+      expect(test.controller.snapshot().facts).toHaveLength(2);
       expect(test.controller.snapshot().evidence).toHaveLength(1);
-      return json({ summary: "Attach a new synthetic hypothesis using acknowledged IDs from the earlier run", result: "done", findings: [{
+      return json({ summary: "Attach a new synthetic hypothesis using this Step's acknowledged Fact ID", result: "done", findings: [{
         key: "cross-run-synthetic-fixture", title: "Synthetic fixture hypothesis only", target: "generated local fixture", status: "lead",
         factRefs: [ids.fact], evidenceRefs: [ids.evidence], next: "Review fixture conditions before drawing any conclusion",
       }] });
@@ -1209,14 +1212,16 @@ describe("durable Execute checkpoints through the real Pi tool loop", () => {
     await test.controller.start();
     const board = test.controller.snapshot();
     expect(board).toMatchObject({ status: "paused", outcome: null, completedSteps: 2 });
-    expect(board.facts).toHaveLength(1);
+    expect(board.facts).toHaveLength(2);
     expect(board.evidence).toHaveLength(1);
     expect(board.findings).toHaveLength(1);
-    expect(board.findings[0]).toMatchObject({ factIds: [firstIds!.fact], evidenceIds: [firstIds!.evidence] });
+    expect(board.findings[0]).toMatchObject({ factIds: [secondIds!.fact], evidenceIds: [firstIds!.evidence] });
     const executionRuns = test.store.runs().filter(run => run.mode === "execute");
     expect(executionRuns).toHaveLength(2);
     expect(board.evidence[0]!.runId).toBe(executionRuns[0]!.id);
     expect(board.facts[0]!.stepId).toBe(executionRuns[0]!.stepId);
+    expect(board.facts[1]!.stepId).toBe(executionRuns[1]!.stepId);
+    expect(board.steps.find(step => step.id === board.facts[1]!.stepId)!.from).toContain(firstIds!.fact);
     expect(test.store.events().filter(event => event.kind === "execution_checkpoint")).toHaveLength(2);
     assertExactUsage(test);
   });

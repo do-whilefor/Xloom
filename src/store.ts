@@ -425,7 +425,10 @@ export class BlackboardStore {
         const evidenceIds = resolveEvidence(proposal.evidenceRefs);
         assert(evidenceIds.length > 0, "Facts require original evidence references; unsupported claims belong in leads.");
         if (proposal.supersedes) assert(board.facts.some(item => item.id === proposal.supersedes), "Unknown superseded fact.");
-        const existing = board.facts.find(item => normalize(item.description) === normalize(proposal.description) && JSON.stringify([...item.evidenceIds].sort()) === JSON.stringify([...evidenceIds].sort()) && item.supersedes === proposal.supersedes);
+        // Facts inherit prerequisites and conditions from their producing Step.
+        // Identical wording/bytes in another Step must not discard that origin.
+        const existing = board.facts.find(item => item.stepId === step.id && normalize(item.description) === normalize(proposal.description)
+          && JSON.stringify([...item.evidenceIds].sort()) === JSON.stringify([...evidenceIds].sort()) && item.supersedes === proposal.supersedes);
         const factId = existing?.id ?? id("F");
         if (!existing) board.facts.push({ id: factId, description: proposal.description, stepId: step.id, evidenceIds, ...(proposal.supersedes ? { supersedes: proposal.supersedes } : {}) });
         factMap.set(proposal.ref, factId);

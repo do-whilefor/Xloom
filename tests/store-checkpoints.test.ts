@@ -93,6 +93,9 @@ describe("durable execution checkpoints", () => {
     expect(() => store.applyExecutionCheckpoint(runId, "invalid", { summary: "invalid", result: "done",
       facts: [{ ref: "bad", description: "Unsupported", evidenceRefs: ["missing"] }] }, total, rejected)).toThrow();
     expect(rejected).toEqual({});
+    const final = store.applyExecution(runId, renamed, total);
+    expect(final.facts).toEqual(board.facts);
+    expect(final.evidence).toEqual(board.evidence);
   });
 
   it("commits observations while keeping the Step claimed, then counts final usage only once", () => {
