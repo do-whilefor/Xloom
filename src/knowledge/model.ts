@@ -1,13 +1,18 @@
 import type { BoardSnapshot, Execution } from "../types.js";
 import { applyGapRecords } from "./gaps.js";
-import { wikiBasis, wikiDigest, type WikiSource, type WikiStamp } from "../wiki/model.js";
+import { wikiBasis, wikiDigest, wikiRecord, type WikiSource, type WikiStamp } from "../wiki/model.js";
 import { compareConditions, portsMatch, type Capability, type Chain } from "./schema.js";
 
 const sources = (kind: WikiSource["kind"], ids: string[]): WikiSource[] => [...new Set(ids)].map(id => ({ kind, id }));
 function basisIssues(board: BoardSnapshot, basis: WikiStamp[], roots: WikiSource[]): string[] {
   try {
     const current = wikiBasis(board, roots);
-    return wikiDigest(current) === wikiDigest(basis) ? [] : ["source_changed"];
+    const issues = wikiDigest(current) === wikiDigest(basis) ? [] : ["source_changed"];
+    if (roots.some(ref => {
+      const record = wikiRecord(board, ref)?.value;
+      return record && "reviewIssues" in record && Array.isArray(record.reviewIssues) && record.reviewIssues.some(code => code !== "source_replaced");
+    })) issues.push("source_review_required");
+    return issues;
   } catch { return ["source_missing"]; }
 }
 export function capabilityIssues(board: BoardSnapshot, capability: Capability): string[] {

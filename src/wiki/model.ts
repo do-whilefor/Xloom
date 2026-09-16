@@ -5,6 +5,7 @@ import { knowledgeRecord } from "../knowledge/model.js";
 import { cvssIssues, projectCvss } from "../scoring/cvss.js";
 import { observationConflicts } from "../observations/changes.js";
 import { hypothesisKey } from "../loop/attempts.js";
+import { factBasisReviews } from "../loop/fact-basis.js";
 
 const text = (max: number) => z.string().trim().min(1).max(max).refine(value => !value.includes("\0"), "Must not contain NUL characters");
 export const wikiSourceSchema = z.object({ kind: z.enum(["goal", "step", "fact", "finding", "evidence", "attempt", "capability", "chain"]), id: text(256) }).strict();
@@ -69,7 +70,7 @@ function recordScope(board: BoardSnapshot) {
   for (const step of board.steps) if (step.combination?.counterEvidence?.length)
     for (const id of new Set([...step.from, ...step.combination.requires])) add(counterSteps, id, step);
   return { goals: index(board.goals), steps: index(board.steps), facts: index(board.facts), findings: index(board.findings), evidence: index(board.evidence),
-    attempts: index(board.attempts ?? []), replacedBy, attemptsByEvidence, attemptsByHypothesis, counterSteps,
+    attempts: index(board.attempts ?? []), replacedBy, attemptsByEvidence, attemptsByHypothesis, counterSteps, factReviews: factBasisReviews(board),
     conflicts: observationConflicts(board), records: new Map<string, PublicRecord | undefined>(),
     blocks: wikiBlocks(board.wikiPages ?? []), issues: new Map<WikiRevision, (WikiIssue & { blockId: string })[]>() };
 }
@@ -118,9 +119,10 @@ function projectWikiRecord(board: BoardSnapshot, ref: WikiSource, scope: ReturnT
       .map(step => ({ stepId: step.id, scope: step.combination!.scope, stateVersion: step.combination!.stateVersion, counterEvidence: step.combination!.counterEvidence! }));
     const attempts = [...new Set(r.evidenceIds.flatMap(id => scope.attemptsByEvidence.get(id) ?? []))].sort();
     const conflicts = scope.conflicts;
-    const reviewIssues = [...(replacedBy.length ? ["source_replaced"] : []), ...(attempts.some(id => conflicts.has(id)) ? ["observation_conflict"] : [])];
+    const basisReview = scope.factReviews.get(r.id);
+    const reviewIssues = [...(replacedBy.length ? ["source_replaced"] : []), ...(basisReview ? ["basis_review_required"] : []), ...(attempts.some(id => conflicts.has(id)) ? ["observation_conflict"] : [])];
     return { value: { id: r.id, description: r.description, stepId: r.stepId, evidenceIds: r.evidenceIds, supersedes: r.supersedes, replacedBy, originConditions, counterContexts, attempts,
-      ...(reviewIssues.length ? { reviewIssues } : {}) },
+      ...(reviewIssues.length ? { reviewIssues } : {}), ...(basisReview ? { basisReview } : {}) },
       dependencies: [...source("evidence", r.evidenceIds), ...source("fact", [...replacedBy, ...(r.supersedes ? [r.supersedes] : []),
         ...(origin?.from ?? []), ...(combination?.requires ?? []), ...(combination?.counterEvidence ?? []), ...counterContexts.flatMap(item => item.counterEvidence)]), ...source("attempt", attempts)] };
   }

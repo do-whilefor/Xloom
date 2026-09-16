@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import type { Attempt, BoardSnapshot, Evidence, Fact, Finding, Goal, Hint, Mode, RunRequest, Step } from "../types.js";
 import { projectFindingContext, type FindingContext } from "./finding-context.js";
 import { projectCvss } from "../scoring/cvss.js";
+import { causalFactInputs, factInputs } from "./fact-basis.js";
 
 export type ContextStep = Omit<Step, "runId" | "leaseUntil"> & {
   /** A failed run may have left files here; this is not committed or verified Evidence. */
@@ -88,10 +89,6 @@ function projectAttempt(attempt: Attempt): ContextAttempt {
   };
 }
 
-function factInputs(step: Step): string[] {
-  return [...step.from, ...(step.combination?.requires ?? []), ...(step.combination?.counterEvidence ?? [])];
-}
-
 /** Supersession invalidates applicability of dependent plans, not their archived evidence. */
 export function pendingStepReviews(board: BoardSnapshot): StepReview[] {
   const facts = new Map(board.facts.map(fact => [fact.id, fact]));
@@ -110,14 +107,7 @@ export function pendingStepReviews(board: BoardSnapshot): StepReview[] {
     if (cached) return cached;
     // A correction may have used the prior Fact as an input to retest it. That
     // historical input alone must not make the corrected Fact permanently stale.
-    const corrected = new Set<string>();
-    let prior = fact.supersedes;
-    while (prior && !corrected.has(prior)) {
-      corrected.add(prior);
-      prior = facts.get(prior)?.supersedes;
-    }
-    const origin = fact.stepId ? steps.get(fact.stepId) : undefined;
-    const inputs = origin ? factInputs(origin).filter(id => !corrected.has(id)) : [];
+    const inputs = causalFactInputs(fact, facts, steps);
     dependencies.set(fact.id, inputs);
     return inputs;
   }
