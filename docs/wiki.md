@@ -112,9 +112,7 @@ checkpoint 的错误按既有工具结果返回。来源不合法或作者提交
 
 测试覆盖来源 ID、同批引用、事务回滚、checkpoint、重启、历史版本、事实替代、
 条件和反证提示、页面生成失败、派生材料隔离及真实 Pi read/write 的跨角色读取。
-自动化测试使用合成材料和模拟模型响应；另有直接调用项目配置模型的
-[Wiki 与 RAG 优化回放](wiki-rag-optimization-validation.md)。这些验证不能推算真实任务
-的解释准确率或漏洞判断能力。
+自动化测试使用合成材料和模拟模型响应，不能推算真实任务的解释准确率或漏洞判断能力。
 
 组织方式参考本地 Webounty 的 `references/wiki-layout.md` 与 `references/storage.md`：
 按完整判断保存条件和来源、稳定页面身份、保留旧解释并标记变化。本阶段使用 Xloom

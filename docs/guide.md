@@ -256,6 +256,6 @@ Chat 和 Execute 的 Chrome 接入默认复用用户正在运行的浏览器，�
 
 ## 扩展位置
 
-详见 [架构说明](docs/architecture.md)。MVP 扩展边界是 `ContextProjector`（角色视图）、`LoopPolicy`（选步及执行后复核）、`AgentRunner`（执行后端）、结果契约、黑板 Store 和 `LoopEvent`（含角色交接）。通过构造参数和 TypeScript 接口扩展，不增加运行时插件系统。运行适配层使用 Pi 的下一回合上下文接口维护私有上下文，在显式有限回合数下预留收尾，通过 PowerShell operations 做语法预检，不修改 Pi 依赖源码。
+详见 [架构说明](architecture.md)。MVP 扩展边界是 `ContextProjector`（角色视图）、`LoopPolicy`（选步及执行后复核）、`AgentRunner`（执行后端）、结果契约、黑板 Store 和 `LoopEvent`（含角色交接）。通过构造参数和 TypeScript 接口扩展，不增加运行时插件系统。运行适配层使用 Pi 的下一回合上下文接口维护私有上下文，在显式有限回合数下预留收尾，通过 PowerShell operations 做语法预检，不修改 Pi 依赖源码。
 
 设计参考 Cairn / Cairn_Y 的黑板协作与 FGS；Jase 体现在外层的边界建模、改变变量、影响闭环与完成复核，独立实现，不复用 Cairn 的 AGPL 源码。Pi 依赖使用 MIT 许可证；保留各依赖原有许可。

@@ -70,10 +70,8 @@ Execute 的原生 `wikiPages`（最终结果或 checkpoint）支持以下字段�
 不改后代作者修订及事实基线。目录、检索提示、依赖和旧版本保存在当前任务 SQLite；
 Markdown、manifest、organization 与检索缓存均可重建。普通聊天继续与研究资料隔离。
 
-本批验证与真实配置模型回放见 [Wiki 结构验证记录](wiki-structure-validation.md)。
 观察对比已接入，见 [观察与复核](observation-comparison.md)。跨轮交接支持新增／变更
-导航，并持久记录 removed／inactive 提示回执。本轮缓存、恢复和语义检索的验证见
-[Wiki 与 RAG 优化验证](wiki-rag-optimization-validation.md)。
+导航，并持久记录 removed／inactive 提示回执。
 
 ## 多前提查询与 Wiki 维护
 
@@ -100,8 +98,7 @@ organization.json 增加 optional maintenance 导航：检索提示／问题缺�
 8,000 字符的判断、完全相同的正文，以及没有目录或必要解释连接的根页。每项附
 精确 readPath；这些是可选写作建议，不是错误、缺失证据或可自动合并的结论。
 目录独立可能合理，长判断不得为了缩短而丢失条件。元数据维护继续保留来源基线。
-作者说明提供问题、观察、别名之间的边界。评测及模型验证见
-[检索质量记录](retrieval-quality.md)。
+作者说明提供问题、观察、别名之间的边界。
 
 ## 围绕缺口检索原文
 
@@ -154,8 +151,7 @@ Wiki／精确记录／能力发现返回的证据元数据现在同时提供 `or
 这些提示只存在于本角色内，未写入 SQLite 或跨角色共享。正文仍完整返回，以支持
 主动复查与上下文压缩后的补读；新角色重新读取自己的来源。提示在字符预算不足时
 省略，不能挤掉必要来源。优化目标是让模型直接检查原件、避免换视图确认同一资料，
-不是跳过完整性检查或强制禁止重复读取。真实 Chat／Run 回放见
-[精读与模式验证记录](reading-modes-validation.md)。
+不是跳过完整性检查或强制禁止重复读取。
 
 缺失、二进制或非 UTF-8 原件、篡改、读取期间变化和链接越界均报告不完整，不返回
 该原件的候选正文。显示预算不足时明确返回 budget_exhausted 或来源延后说明，
@@ -212,8 +208,6 @@ Wiki 元数据检索与能力发现不校验全部原件；已声明的来源变
 仍需 original 入口。原文搜索独立校验命中原件，篡改及缺失会报告 complete=false。
 新入口沿用本轮重复查询提示，新的角色仍可重新读取同一资料；搜索和发现不推进
 跨轮资料交接记录、不复核作者解释、不解决缺口，也不改变 Finding 或 Goal。
-
-本批的真实模型回放、失败修正及重跑命令见 [原生入口验证记录](native-retrieval-validation.md)。
 
 ## 本地模块入口
 
@@ -394,9 +388,6 @@ material_receipts 事务保存；已提示的移除不重复通知，重新出�
 inputChars、elapsedMs；字符数只计传给模型适配器的 JSON 数据，时长只计模型调用，
 不等于实际计费 token、完整提示词长度或整个读取耗时。
 
-冷热检索测量、真实配置模型回放及失败记录见
-[Wiki 与 RAG 优化验证](wiki-rag-optimization-validation.md)。
-
 ## 历史导航与召回边界
 
 `xloom://history?kind=fact` 和 `kind=attempt` 分页列出全部历史记录，每条携带精确
@@ -412,4 +403,3 @@ inputChars、elapsedMs；字符数只计传给模型适配器的 JSON 数据，�
 Step 所属 Goal 和 Goal 的父目录通过 navigation 表达，不因共享 Goal 就扩展其他 Fact。
 明确引用 Goal 本身仍返回其声明的事实；真实因果输入、更正、反证、必要 Wiki 块继续
 完整交付。缺失目录引用与缺失证据来源分别报告为 missingNavigation 和 missingSources。
-本次离线回归和范围限制见 [上下文维护验证](context-maintenance-validation.md)。
