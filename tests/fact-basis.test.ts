@@ -62,4 +62,19 @@ describe("derived fact applicability", () => {
     expect(capabilityIssues(board, board.capabilities[0]!)).toContain("source_review_required");
     expect(discoverKnowledge(board).items[0]!.plan).toBeNull();
   });
+  it("allows an explicit correction of a stale derived Fact without hiding old sources or independent stale claims", () => {
+    const board = fixture();
+    board.steps[4]!.from = ["F-1", "F-3"];
+    board.facts[4]!.supersedes = "F-1";
+    const page = (sources: import("../src/wiki/model.js").WikiSource[]) => ({ revision: 1, boardRevision: board.revision, title: "Rechecked claim",
+      blocks: [{ id: "B-corrected", title: "Rechecked claim", text: "Correction with current input", sources, basis: wikiBasis(board, sources) }] });
+    expect(factBasisReviews(board).has("F-4")).toBe(false);
+    const corrected = page([{ kind: "fact", id: "F-4" }]);
+    expect(corrected.blocks[0]!.basis.some(ref => ref.id === "F-1")).toBe(true);
+    expect(wikiIssues(board, corrected)).toEqual([]);
+    for (const sources of [[{ kind: "fact" as const, id: "F-1" }, { kind: "fact" as const, id: "F-4" }], [{ kind: "step" as const, id: "S-4" }]])
+      expect(wikiIssues(board, page(sources)).some(issue => issue.id === "F-1" && issue.reason === "source_review_required")).toBe(true);
+    board.facts[0]!.description = "Later change to archived source";
+    expect(wikiIssues(board, corrected).some(issue => issue.id === "F-0" && issue.reason === "source_changed")).toBe(true);
+  });
 });

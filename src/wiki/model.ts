@@ -284,6 +284,21 @@ export function wikiIssues(board: BoardSnapshot, page: WikiRevision): (WikiIssue
     return cache.get(page)!;
   });
 }
+/** A Fact already carries transitive applicability warnings. Its historical
+ * correction records remain in the signed basis, but their old applicability
+ * does not invalidate an explicit correction. Other source kinds expand to
+ * their directly claimed Facts before applying this rule. */
+function judgmentFactRoots(board: BoardSnapshot, sources: WikiSource[]): Set<string> {
+  const queue = [...sources], seen = new Set<string>(), facts = new Set<string>();
+  for (let i = 0; i < queue.length; i++) {
+    const ref = queue[i]!;
+    if (seen.has(key(ref))) continue;
+    seen.add(key(ref));
+    if (ref.kind === "fact") facts.add(ref.id);
+    else queue.push(...wikiRecord(board, ref)?.dependencies ?? []);
+  }
+  return facts;
+}
 function collectWikiIssues(board: BoardSnapshot, page: WikiRevision): (WikiIssue & { blockId: string })[] {
   const issues: (WikiIssue & { blockId: string })[] = [];
   const byBlock = readScopes.get(board)!.blocks;
@@ -294,10 +309,12 @@ function collectWikiIssues(board: BoardSnapshot, page: WikiRevision): (WikiIssue
     for (let i = 0; i < pending.length; i++) {
       const { block, via } = pending[i]!;
       const origin = via ? { via } : {};
+      const claimedFacts = judgmentFactRoots(board, block.sources);
       for (const ref of block.basis) {
         const current = wikiRecord(board, ref);
         if (!current || wikiDigest(current.value) !== ref.signature) add({ kind: ref.kind, id: ref.id, reason: current ? "source_changed" : "source_missing", ...origin });
-        if (current && "reviewIssues" in current.value && Array.isArray(current.value.reviewIssues) && current.value.reviewIssues.some(code => code !== "source_replaced"))
+        if (current && "reviewIssues" in current.value && Array.isArray(current.value.reviewIssues) && current.value.reviewIssues.some(code =>
+          code !== "source_replaced" && (code !== "basis_review_required" || ref.kind !== "fact" || claimedFacts.has(ref.id))))
           add({ kind: ref.kind, id: ref.id, reason: "source_review_required", ...origin });
       }
       for (const ref of block.requiredBasis ?? []) {
