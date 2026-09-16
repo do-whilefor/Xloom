@@ -19,8 +19,34 @@ const hintSchema = z.array(z.string().trim().min(1).max(512)).min(1).max(6);
 const indexingSchema = z.object({ documents: z.array(z.object({ id: z.string(), queries: hintSchema }).strict()).min(1).max(8) }).strict();
 const expansionSchema = z.object({ groups: z.array(z.object({ id: z.string(), queries: z.array(z.string().trim().min(1).max(512)).max(4) }).strict()).min(1).max(9) }).strict();
 const rankingSchema = z.object({ scores: z.array(z.object({ id: z.string(), score: z.number().finite().min(0).max(100) }).strict()).max(12) }).strict();
-const protocol = "semantic-retrieval-v2";
-type Counters = { requests: number; cacheHits: number; indexedDocuments: number; reusedDocuments: number };
+const protocol = "semantic-retrieval-v3";
+export const semanticLimits = { indexDocuments: 8, indexInputChars: 48000, rerankCandidates: 12, rerankInputChars: 48000 } as const;
+type Stage = Parameters<SemanticModel["generate"]>[0];
+type StageCost = { requests: number; cacheHits: number; inputChars: number; elapsedMs: number };
+type Counters = { requests: number; cacheHits: number; indexedDocuments: number; reusedDocuments: number;
+  deferredDocuments: number; oversizedDocuments: number; deferredCandidates: number; oversizedCandidates: number;
+  stages: Record<Stage, StageCost> };
+
+async function generate(model: SemanticModel, stage: Stage, input: unknown, signal: AbortSignal | undefined, counters: Counters) {
+  signal?.throwIfAborted();
+  const cost = counters.stages[stage], started = performance.now();
+  counters.requests++; cost.requests++; cost.inputChars += JSON.stringify(input).length;
+  try { return await model.generate(stage, input, signal); }
+  finally { cost.elapsedMs += Math.round(performance.now() - started); }
+}
+
+/** Query must consist entirely of known IDs; ordinary words alongside an ID
+ * still use the requested strategy. Block IDs require their page ID. */
+function exactReferenceQuery(query: string, index: RetrievalIndex): boolean {
+  const value = query.normalize("NFKC").toLowerCase().trim();
+  if (!/^[a-z0-9_-]+(?:\s+[a-z0-9_-]+)*$/.test(value)) return false;
+  const tokens = new Set(value.split(/\s+/)), matched = new Set<string>();
+  for (const { ref } of index.documents) if (tokens.has(ref.id.toLowerCase()) && (ref.kind !== "block" || tokens.has(ref.pageId!.toLowerCase()))) {
+    matched.add(ref.id.toLowerCase());
+    if (ref.pageId) matched.add(ref.pageId.toLowerCase());
+  }
+  return [...tokens].every(token => matched.has(token));
+}
 
 function closure(ref: RetrievalRef, documents: Map<string, RetrievalDocument>): RetrievalDocument[] {
   const pending = [ref], sources = new Map<string, RetrievalDocument>();
@@ -35,7 +61,7 @@ function closure(ref: RetrievalRef, documents: Map<string, RetrievalDocument>): 
 /** One durable hint entry per Wiki judgment and full source basis. Metadata-only
  * author edits remain author edits: generated questions live solely in cache. */
 async function enrichIndex(index: RetrievalIndex, context: TaskReadContext, workspace: string, model: SemanticModel,
-  refresh: boolean, signal: AbortSignal | undefined, counters: Counters): Promise<RetrievalIndex> {
+  refresh: boolean, signal: AbortSignal | undefined, counters: Counters, preferred: RetrievalRef[]): Promise<RetrievalIndex> {
   const docs = new Map(index.documents.map(doc => [refKey(doc.ref), doc]));
   const entries = index.documents.filter(doc => doc.ref.kind === "block").map((doc, i) => {
     const records = closure(doc.ref, docs);
@@ -49,16 +75,18 @@ async function enrichIndex(index: RetrievalIndex, context: TaskReadContext, work
     if (!refresh && cached?.signature === entry.signature && value.success) { hints[entry.key] = value.data; counters.reusedDocuments++; }
     else pending.push(entry);
   }
-  const batches: typeof entries[] = []; let batch: typeof entries = [], chars = 0;
+  const order = new Map(preferred.map((ref, i) => [refKey(ref), i]));
+  pending.sort((a, b) => (order.get(a.key) ?? Infinity) - (order.get(b.key) ?? Infinity));
+  const batch: typeof entries = [];
+  const input = (items: typeof entries) => ({ documents: items.map(({ id, records }) => ({ id, records })) });
   for (const entry of pending) {
-    const size = JSON.stringify(entry.records).length;
-    if (batch.length && (batch.length >= 8 || chars + size > 48000)) { batches.push(batch); batch = []; chars = 0; }
-    batch.push(entry); chars += size;
+    if (JSON.stringify(input([entry])).length > semanticLimits.indexInputChars) { counters.oversizedDocuments++; continue; }
+    if (batch.length >= semanticLimits.indexDocuments || JSON.stringify(input([...batch, entry])).length > semanticLimits.indexInputChars) continue;
+    batch.push(entry);
   }
-  if (batch.length) batches.push(batch);
-  const generate = async (batch: typeof entries) => {
-    signal?.throwIfAborted(); counters.requests++;
-    const result = indexingSchema.parse(await model.generate("index", { documents: batch.map(({ id, records }) => ({ id, records })) }, signal));
+  counters.deferredDocuments = pending.length - batch.length;
+  if (batch.length) {
+    const result = indexingSchema.parse(await generate(model, "index", input(batch), signal, counters));
     const ids = new Set(batch.map(entry => entry.id));
     if (result.documents.length !== ids.size || new Set(result.documents.map(entry => entry.id)).size !== ids.size || result.documents.some(entry => !ids.has(entry.id))) throw new Error("Invalid indexed document IDs");
     signal?.throwIfAborted();
@@ -69,11 +97,6 @@ async function enrichIndex(index: RetrievalIndex, context: TaskReadContext, work
       }
     });
     counters.indexedDocuments += batch.length;
-  };
-  for (let i = 0; i < batches.length; i += 2) {
-    const results = await Promise.allSettled(batches.slice(i, i + 2).map(generate));
-    const failure = results.find(result => result.status === "rejected");
-    if (failure?.status === "rejected") throw failure.reason;
   }
   withIndexCache(context.dataDir, workspace, db => pruneEntries(db, "semantic-doc", new Set(entries.map(entry => entry.key))));
   const postings = { ...index.postings }, lengths = [...index.lengths];
@@ -87,23 +110,24 @@ async function enrichIndex(index: RetrievalIndex, context: TaskReadContext, work
       postings[word] = values; lengths[i]! += count;
     }
   });
-  return { ...index, postings, lengths, semanticHints: hints, signature: wikiDigest([index.signature, hints]) };
+  // Cache identity cannot depend on the order in which cold batches finished.
+  const stableHints = Object.fromEntries(Object.entries(hints).sort(([a], [b]) => a.localeCompare(b)));
+  return { ...index, postings, lengths, semanticHints: stableHints, signature: wikiDigest([index.signature, stableHints]) };
 }
 
 /** Derived query/ranking hints only. No source text, evidence verdict, author
  * review or generated answer is persisted here. Disk failures recompute. */
 async function memo<T>(context: TaskReadContext, workspace: string, model: SemanticModel, stage: "expand" | "rerank", input: unknown,
-  parse: (value: unknown) => T, refresh: boolean, signal: AbortSignal | undefined, counters: { requests: number; cacheHits: number }) {
+  parse: (value: unknown) => T, refresh: boolean, signal: AbortSignal | undefined, counters: Counters) {
   const key = wikiDigest([protocol, model.identity, stage, input]);
   if (!refresh) {
     const cached = withIndexCache(context.dataDir, workspace, db => {
       const entry = cachedEntry<unknown>(db, "semantic", key);
       return entry?.signature === key ? parse(entry.value) : undefined;
     });
-    if (cached !== undefined) { counters.cacheHits++; return cached; }
+    if (cached !== undefined) { counters.cacheHits++; counters.stages[stage].cacheHits++; return cached; }
   }
-  signal?.throwIfAborted(); counters.requests++;
-  const value = parse(await model.generate(stage, input, signal));
+  const value = parse(await generate(model, stage, input, signal, counters));
   signal?.throwIfAborted();
   withIndexCache(context.dataDir, workspace, db => {
     putEntry(db, "semantic", key, key, value, []);
@@ -146,17 +170,24 @@ export function createSemanticTaskReader(workspace: string, context: TaskReadCon
     if (budget < 2048) return { type: url.hostname === "question" ? "question_context" : "task_search", evidence: false, complete: false, status: "budget_exhausted", nextReadPath: next.href };
     if (url.hostname === "search" && !p.has("mode")) p.set("mode", mode);
     p.set("budgetChars", String(budget));
-    const model = context.semantic, counters: Counters = { requests: 0, cacheHits: 0, indexedDocuments: 0, reusedDocuments: 0 };
+    const cost = (): StageCost => ({ requests: 0, cacheHits: 0, inputChars: 0, elapsedMs: 0 });
+    const model = context.semantic, counters: Counters = { requests: 0, cacheHits: 0, indexedDocuments: 0, reusedDocuments: 0,
+      deferredDocuments: 0, oversizedDocuments: 0, deferredCandidates: 0, oversizedCandidates: 0,
+      stages: { expand: cost(), index: cost(), rerank: cost() } };
     const deliver = (enhancement: SearchEnhancement, status: string) => {
-      const output = read(url.href, { ...enhancement, semantic: { status, ...counters, notice: "Model retrieval hints and relevance ordering only; read current sources and original conditions. No semantic equivalence, evidence validity or gap resolution is asserted." } });
+      const output = read(url.href, { ...enhancement, semantic: { status, ...counters, limits: semanticLimits,
+        notice: "Retrieval hints only; read current sources and conditions. Deferred packages remain lexical candidates. inputChars counts serialized inputs, not billed tokens; elapsedMs measures model calls. No evidence validity or gap resolution is asserted." } });
       // Continuations must retain the requested strategy, not silently revert.
       if ("nextReadPath" in output && typeof output.nextReadPath === "string") {
         const next = new URL(output.nextReadPath); next.searchParams.set("strategy", "semantic"); output.nextReadPath = next.href;
       }
       return output;
     };
-    if (!model) return deliver({}, "unavailable_lexical_fallback");
     try {
+      signal?.throwIfAborted();
+      const baseIndex = incrementalRetrievalIndex(board, context.dataDir, workspace).index;
+      if (url.hostname === "search" && mode === "wiki" && exactReferenceQuery(query, baseIndex)) return deliver({ index: baseIndex }, "exact_reference_local");
+      if (!model) return deliver({}, "unavailable_lexical_fallback");
       const groups: QueryGroup[] = (gap && !p.has("query") ? gapSearchGroups(gap) : undefined) ?? [{ id: "query", alternatives: [query] }];
       const expanded = await memo(context, workspace, model, "expand", { query, groups }, value => {
         const result = expansionSchema.parse(value);
@@ -167,7 +198,8 @@ export function createSemanticTaskReader(workspace: string, context: TaskReadCon
       const queryGroups = groups.map(group => ({ id: group.id, alternatives: [...new Set([...group.alternatives,
         ...expanded.groups.find(item => item.id === group.id)!.queries])].slice(0, 10) }));
       compileQueryGroups(query, queryGroups);
-      const index = await enrichIndex(incrementalRetrievalIndex(board, context.dataDir, workspace).index, context, workspace, model, refresh, signal, counters);
+      const priority = retrieveWiki(board, context.dataDir, workspace, query, { queryGroups, limit: 40 }, baseIndex).hits.map(hit => hit.ref);
+      const index = await enrichIndex(baseIndex, context, workspace, model, refresh, signal, counters, priority);
       const lexical = retrieveWiki(board, context.dataDir, workspace, query, { queryGroups, limit: 40 }, index);
       const originals = url.hostname === "search" && mode === "wiki" ? undefined : searchOriginals(board, context.dataDir, workspace, query, 20, refresh, queryGroups);
       const refs = new Map<string, RetrievalRef>();
@@ -179,33 +211,31 @@ export function createSemanticTaskReader(workspace: string, context: TaskReadCon
           .map(hit => ({ locator: hit.locator, snippet: hit.snippet })) };
       });
       const scores = new Map<string, number>();
-      // Complete judgments/source closures are never truncated to fit a batch.
-      const batches: typeof candidates[] = []; let batch: typeof candidates = [], chars = 0;
+      // One bounded request, with complete judgments/source closures. Oversized
+      // packages and candidates beyond the budget keep their lexical ordering.
+      const batch: typeof candidates = [];
+      const input = (items: typeof candidates) => ({ query, groups, corpusSignature: index.signature, candidates: items });
       for (const candidate of candidates) {
-        const size = JSON.stringify(candidate).length;
-        if (batch.length && (batch.length >= 8 || chars + size > 48000)) { batches.push(batch); batch = []; chars = 0; }
-        batch.push(candidate); chars += size;
+        if (JSON.stringify(input([candidate])).length > semanticLimits.rerankInputChars) { counters.oversizedCandidates++; continue; }
+        if (batch.length >= semanticLimits.rerankCandidates || JSON.stringify(input([...batch, candidate])).length > semanticLimits.rerankInputChars) continue;
+        batch.push(candidate);
       }
-      if (batch.length) batches.push(batch);
-      const rankBatch = async (candidates: typeof batch) => {
-        const ranked = await memo(context, workspace, model, "rerank", { query, groups, corpusSignature: index.signature, candidates }, value => {
-          const result = rankingSchema.parse(value), ids = new Set(candidates.map(item => item.id));
+      counters.deferredCandidates = candidates.length - batch.length;
+      if (batch.length) {
+        const ranked = await memo(context, workspace, model, "rerank", input(batch), value => {
+          const result = rankingSchema.parse(value), ids = new Set(batch.map(item => item.id));
           if (result.scores.length !== ids.size || new Set(result.scores.map(item => item.id)).size !== ids.size || result.scores.some(item => !ids.has(item.id))) throw new Error("Invalid ranking references");
           return result;
         }, refresh, signal, counters);
         ranked.scores.forEach(item => scores.set(item.id, item.score));
-      };
-      for (let i = 0; i < batches.length; i += 2) {
-        // Complete all started requests before fallback/cancellation is returned;
-        // usage must not continue changing after the owning read has finished.
-        const results = await Promise.allSettled(batches.slice(i, i + 2).map(rankBatch));
-        const failure = results.find(result => result.status === "rejected");
-        if (failure?.status === "rejected") throw failure.reason;
       }
       signal?.throwIfAborted();
       if (retrievalInputSignature(context.snapshot()) !== signature) return deliver({}, "sources_changed_lexical_fallback");
-      candidates.sort((a, b) => scores.get(b.id)! - scores.get(a.id)!);
-      const preferredRefs = candidates.map(item => item.ref), preferredOriginals = preferredRefs.filter(ref => ref.kind === "evidence").map(ref => ref.id);
+      // Leave unranked slots in place rather than demoting every deferred item.
+      const ranked = candidates.filter(item => scores.has(item.id)).sort((a, b) => scores.get(b.id)! - scores.get(a.id)!);
+      let cursor = 0;
+      const ordered = candidates.map(item => scores.has(item.id) ? ranked[cursor++]! : item);
+      const preferredRefs = ordered.map(item => item.ref), preferredOriginals = preferredRefs.filter(ref => ref.kind === "evidence").map(ref => ref.id);
       return deliver({ queryGroups, preferredRefs, preferredOriginals, index }, "applied");
     } catch {
       signal?.throwIfAborted();

@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { wikiStructureFixture } from "./fixtures/wiki-structure.js";
 import { createTaskReader, type TaskReadContext } from "../src/wiki/read.js";
-import { createSemanticTaskReader, type SemanticModel } from "../src/wiki/semantic.js";
+import { createSemanticTaskReader, semanticLimits, type SemanticModel } from "../src/wiki/semantic.js";
 import { clearRetrievalSnapshots } from "../src/wiki/incremental.js";
 import { createWorkspaceReadTool } from "../src/runtime/read.js";
 
@@ -132,5 +132,64 @@ describe("model-assisted retrieval with authoritative source delivery", () => {
     const f = fixture();
     const result: any = await f.reader()(path.replace(encodeURIComponent(query), encodeURIComponent("WK-context B-scope")));
     expect(result.wiki.hits[0]).toMatchObject({ ref: { kind: "block", pageId: "WK-context", id: "B-scope" }, reason: "exact_reference" });
+    expect(result.semantic).toMatchObject({ status: "exact_reference_local", requests: 0 });
+    expect(f.generate).not.toHaveBeenCalled();
+  });
+  it("bounds cold enrichment and ranking, prioritizes query matches and progressively reuses hints", async () => {
+    const f = fixture(), board = f.store.snapshot(), template = board.wikiPages![0]!;
+    board.wikiPages!.push(...Array.from({ length: 25 }, (_, i) => ({ ...structuredClone(template), id: `WK-cold-${i}`, blocks: [{
+      ...structuredClone(template.blocks[0]!), id: `B-cold-${i}`, text: i === 24 ? "priorityNeedle; NOT verified outside alice/v1" : `Cold corpus observation ${i}`,
+      requiredBlockRefs: [], requiredBasis: [],
+    }] })));
+    f.context.snapshot = () => board;
+    const coldPath = path.replace(encodeURIComponent(query), "priorityNeedle");
+    const first: any = await f.reader()(coldPath);
+    expect(first.semantic).toMatchObject({ status: "applied", indexedDocuments: 8, deferredDocuments: 21, requests: 3 });
+    const indexed = (f.generate.mock.calls.find(([stage]) => stage === "index")![1] as any).documents;
+    expect(indexed.some((doc: any) => doc.records[0].ref.pageId === "WK-cold-24")).toBe(true);
+    for (const stage of ["expand", "index", "rerank"] as const) {
+      const inputs = f.generate.mock.calls.filter(([value]) => value === stage);
+      expect(inputs).toHaveLength(1);
+      expect(first.semantic.stages[stage]).toMatchObject({ requests: 1, inputChars: JSON.stringify(inputs[0]![1]).length });
+      expect(first.semantic.stages[stage].elapsedMs).toBeGreaterThanOrEqual(0);
+    }
+    expect(first.semantic.stages.index.inputChars).toBeLessThanOrEqual(semanticLimits.indexInputChars);
+    expect(first.semantic.stages.rerank.inputChars).toBeLessThanOrEqual(semanticLimits.rerankInputChars);
+    const ranking = f.generate.mock.calls.find(([stage]) => stage === "rerank")![1] as any;
+    expect(ranking.candidates.length).toBeLessThanOrEqual(semanticLimits.rerankCandidates);
+    f.generate.mockClear();
+    const second: any = await f.reader()(coldPath);
+    expect(second.semantic).toMatchObject({ indexedDocuments: 8, reusedDocuments: 8, deferredDocuments: 13 });
+    const next = (f.generate.mock.calls.find(([stage]) => stage === "index")![1] as any).documents;
+    expect(next.every((doc: any) => !indexed.some((old: any) => old.records[0].ref.pageId === doc.records[0].ref.pageId && old.records[0].ref.id === doc.records[0].ref.id))).toBe(true);
+    await f.reader()(coldPath); await f.reader()(coldPath); f.generate.mockClear();
+    const warm: any = await f.reader()(coldPath);
+    expect(warm.semantic).toMatchObject({ indexedDocuments: 0, reusedDocuments: 29, deferredDocuments: 0, requests: 0 });
+    expect(f.generate).not.toHaveBeenCalled();
+  });
+  it("defers oversized complete packages without sending truncated conditions to the model", async () => {
+    const f = fixture(), board = f.store.snapshot(), template = board.wikiPages![0]!;
+    const original = f.generate.getMockImplementation()!;
+    f.generate.mockImplementation(async (...args) => args[0] === "expand"
+      ? { groups: (args[1] as any).groups.map((group: any) => ({ id: group.id, queries: [] })) } : original(...args));
+    const text = "oversizeNeedle " + "qualification ".repeat(1000) + "NOT verified outside alice / v1";
+    const dependencies = Array.from({ length: 3 }, (_, i) => ({ ...structuredClone(template.blocks[0]!), id: `B-condition-${i}`,
+      text: `Condition ${i}: ` + "qualification ".repeat(800), requiredBlockRefs: [], requiredBasis: [] }));
+    board.wikiPages!.push({ ...structuredClone(template), id: "WK-oversize", blocks: [{ ...structuredClone(template.blocks[0]!),
+      id: "B-oversize", text, requiredBlockRefs: [...dependencies.map(block => ({ pageId: "WK-oversize", blockId: block.id })),
+        { pageId: "WK-context", blockId: "B-scope" }], requiredBasis: [] }, ...dependencies] });
+    f.context.snapshot = () => board;
+    const result: any = await f.reader()(path.replace(encodeURIComponent(query), "oversizeNeedle").replace("limit=2", "limit=1"));
+    expect(result.semantic).toMatchObject({ status: "applied", oversizedDocuments: 1 });
+    expect(result.semantic.deferredDocuments).toBeGreaterThanOrEqual(1);
+    expect(result.semantic.oversizedCandidates).toBeGreaterThanOrEqual(1);
+    for (const [stage, input] of f.generate.mock.calls) if (stage !== "expand") {
+      expect(JSON.stringify(input).length).toBeLessThanOrEqual(48000);
+      const records = (stage === "index" ? (input as any).documents : (input as any).candidates).flatMap((entry: any) => entry.records);
+      expect(records.some((doc: any) => doc.ref.pageId === "WK-oversize" && doc.ref.id === "B-oversize")).toBe(false);
+    }
+    expect(result.wiki.records.find((doc: any) => doc.ref.pageId === "WK-oversize").text).toBe(text);
+    for (const dependency of dependencies) expect(result.wiki.records.find((doc: any) => doc.ref.id === dependency.id).text).toBe(dependency.text);
+    expect(JSON.stringify(result.wiki.records)).toContain("Only alice / v1 was observed");
   });
 });
