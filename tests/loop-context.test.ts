@@ -85,7 +85,7 @@ describe("role-specific blackboard context", () => {
     expect(guidance.length).toBeLessThanOrEqual(1_250);
     for (const required of [
       "Omission is not negative evidence", "counts give no contents", "dependencies may exceed a fixed context budget",
-      "stepOrigins: causal inputs/conditions, not executable plans", "all Facts for Decide/metacog, related Facts for Execute",
+      "stepOrigins: causal inputs/conditions, not executable plans", "history pages cover all Facts/attempts",
       "available means no recorded replacement, not current validity", "Summaries/excerpts may be truncated and references unexpanded",
       "inspect full evidence", "schedule Execute from indexed Facts", "Superseded Facts are historical; read replacements",
       "superseded direct/causal inputs", "recheck scope/identity/state and abandon/replan",

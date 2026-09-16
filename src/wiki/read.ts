@@ -10,6 +10,7 @@ import type { SemanticModel } from "./semantic.js";
 import { createReadingTracker } from "./reading.js";
 import { compareEvidence } from "../observations/read.js";
 import { createSourcePager } from "./source-pages.js";
+import { readHistory } from "./history.js";
 
 export interface TaskReadContext {
   dataDir: string; snapshot: () => BoardSnapshot; materialBaseline?: Record<string, string>;
@@ -43,7 +44,8 @@ export function createTaskReader(workspace: string, context: TaskReadContext) {
   return (path: string, enhancement: SearchEnhancement = {}) => {
     const url = new URL(path), p = url.searchParams;
     if (url.protocol !== "xloom:" || url.username || url.password || url.port || url.hash || url.pathname && url.pathname !== "/") throw new Error("Invalid xloom read path");
-    const allowed = url.hostname === "question" ? ["stepId", "gapId", "query", "limit", "budgetChars", "refresh"]
+    const allowed = url.hostname === "history" ? ["kind", "offset", "limit", "budgetChars", "signature"]
+      : url.hostname === "question" ? ["stepId", "gapId", "query", "limit", "budgetChars", "refresh"]
       : url.hostname === "materials" ? ["budgetChars", "refresh"] : url.hostname === "record" ? ["kind", "id", "page", "budgetChars", "sourceOffset", "packageSignature"]
       : url.hostname === "original" ? ["evidenceId", "sha256", "byteOffset", "byteLength", "contextBytes"]
       : url.hostname === "discover" ? ["consumerId", "limit", "maxAlternatives", "budgetChars"]
@@ -53,6 +55,7 @@ export function createTaskReader(workspace: string, context: TaskReadContext) {
     const required = (key: string) => { const value = p.get(key); if (!value) throw new Error(`Missing xloom read parameter: ${key}`); return value; };
     const number = (key: string) => { if (!p.has(key)) return undefined; const value = required(key); if (!/^\d+$/.test(value) || !Number.isSafeInteger(Number(value))) throw new Error(`Invalid ${key}`); return Number(value); };
     const board = context.snapshot();
+    if (url.hostname === "history") return readHistory(board, url);
     if (p.has("refresh") && !["true", "false"].includes(required("refresh"))) throw new Error("refresh must be true or false");
     const refresh = p.get("refresh") === "true";
     if (url.hostname === "compare") return compareEvidence(board, context.dataDir, workspace, required("left"), required("right"), p.has("fields") ? JSON.parse(required("fields")) : []);

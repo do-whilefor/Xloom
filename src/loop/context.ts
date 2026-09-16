@@ -4,6 +4,7 @@ import type { Attempt, BoardSnapshot, Evidence, Fact, Finding, Goal, Hint, Mode,
 import { projectFindingContext, type FindingContext } from "./finding-context.js";
 import { projectCvss } from "../scoring/cvss.js";
 import { causalFactInputs, factInputs } from "./fact-basis.js";
+import { boundedFactIndex } from "./history.js";
 
 export type ContextStep = Omit<Step, "runId" | "leaseUntil"> & {
   /** A failed run may have left files here; this is not committed or verified Evidence. */
@@ -56,6 +57,8 @@ export interface BlackboardContext {
     unavailableReferences: Record<ReferenceKind, string[]>;
     stepReviews: StepReview[];
     omittedAttempts: number;
+    omittedFactIndex: number;
+    history: { facts: string; attempts: string };
     notice: string;
   };
 }
@@ -66,7 +69,7 @@ export type ContextProjector = (request: RunRequest) => BlackboardContext;
 const tailLimits = { steps: 8, facts: 12, findings: 8, evidence: 8 } as const;
 const excerptLimit = 2_000;
 const pending = (step: Step): boolean => step.status === "ready" || step.status === "claimed";
-const notice = "Partial role-specific view. Omission is not negative evidence, an untested boundary or permission to repeat; counts give no contents. Required dependencies may exceed a fixed context budget. stepOrigins: causal inputs/conditions, not executable plans. factIndex: all Facts for Decide/metacog, related Facts for Execute; available means no recorded replacement, not current validity. Summaries/excerpts may be truncated and references unexpanded; inspect full evidence, and schedule Execute from indexed Facts for missing dependencies/comparisons. Superseded Facts are historical; read replacements. stepReviews: pending plans with superseded direct/causal inputs; recheck scope/identity/state and abandon/replan. attempts apply only to recorded scope/identity/state/baseline/changedVariable. Combination requires must hold together in the same scope/state; missing conditions are unverified. recovery.artifacts files may be absent or show unverified side effects, not committed Evidence or Facts. Inspect before retrying; in old runs read only artifacts, never sibling logs/transcripts/chats. Retain verifiable recovery evidence in this run's artifacts. unavailableReferences are missing records, never verified facts.";
+const notice = "Partial role-specific view. Omission is not negative evidence, an untested boundary or permission to repeat; counts give no contents. Required dependencies may exceed a fixed context budget. stepOrigins: causal inputs/conditions, not executable plans. factIndex: bounded navigation; history pages cover all Facts/attempts; available means no recorded replacement, not current validity. Summaries/excerpts may be truncated and references unexpanded; inspect full evidence, and schedule Execute from indexed Facts for missing dependencies/comparisons. Superseded Facts are historical; read replacements. stepReviews: pending plans with superseded direct/causal inputs; recheck scope/identity/state and abandon/replan. attempts apply only to recorded scope/identity/state/baseline/changedVariable. Combination requires must hold together in the same scope/state; missing conditions are unverified. recovery.artifacts files may be absent or show unverified side effects, not committed Evidence or Facts. Inspect before retrying; in old runs read only artifacts, never sibling logs/transcripts/chats. Retain verifiable recovery evidence in this run's artifacts. unavailableReferences are missing records, never verified facts.";
 
 function projectCombination(combination: NonNullable<Step["combination"]>): NonNullable<Step["combination"]> {
   return {
@@ -313,8 +316,11 @@ export function projectContext(request: RunRequest): BlackboardContext {
     }
   }
   let truncatedExcerpts = 0;
-  const attempts = (board.attempts ?? []).filter(attempt => request.mode !== "execute" ||
+  const recentAttempts = new Set((board.attempts ?? []).slice(-12).map(attempt => attempt.id));
+  const findingKeys = new Set(board.findings.filter(finding => selected.findings.has(finding.id)).map(finding => finding.key.toLowerCase().replace(/\s+/g, " ").trim()));
+  const attempts = (board.attempts ?? []).filter(attempt => request.mode !== "execute" && (recentAttempts.has(attempt.id) || findingKeys.has(attempt.hypothesis.toLowerCase().replace(/\s+/g, " ").trim())) ||
     selected.steps.has(attempt.stepId) || originIds.has(attempt.stepId) ||
+    attempt.evidenceIds.some(id => selected.evidence.has(id)) ||
     (request.step?.combination && attempt.scope === request.step.combination.scope && attempt.stateVersion === request.step.combination.stateVersion));
   const projectedEvidence = board.evidence.filter(item => selected.evidence.has(item.id)).map(item => {
     const excerpt = item.excerpt?.slice(0, excerptLimit);
@@ -326,6 +332,7 @@ export function projectContext(request: RunRequest): BlackboardContext {
     };
   });
 
+  const factIndex = boundedFactIndex(board, selected.facts, request.mode === "execute");
   const context: BlackboardContext = {
     revision: board.revision,
     project: { title: board.config.title, goal: board.config.goal, scope: board.config.scope, context: board.config.context },
@@ -340,12 +347,7 @@ export function projectContext(request: RunRequest): BlackboardContext {
     completedSteps: board.completedSteps, noProgressCount: board.noProgressCount,
     goals: board.goals.filter(goal => selected.goals.has(goal.id)).map(projectGoal),
     facts: board.facts.filter(fact => selected.facts.has(fact.id)).map(projectFact),
-    factIndex: board.facts.filter(fact => request.mode !== "execute" || selected.facts.has(fact.id)).map(fact => ({
-      id: fact.id, summary: compact(fact.description),
-      stepId: fact.stepId, evidenceIds: [...fact.evidenceIds],
-      ...(fact.supersedes === undefined ? {} : { supersedes: fact.supersedes }),
-      replacedBy: [...(replacements.get(fact.id) ?? [])], status: replacements.has(fact.id) ? "superseded" : "available",
-    })),
+    factIndex: factIndex.entries,
     attempts: attempts.map(projectAttempt),
     steps: [...steps.values()].filter(step => selected.steps.has(step.id)).map(step => projectStep(step, dirname(request.runDir))),
     findings: board.findings.filter(finding => selected.findings.has(finding.id)).map(projectFinding),
@@ -366,6 +368,8 @@ export function projectContext(request: RunRequest): BlackboardContext {
       unavailableReferences: { goals: [...unavailable.goals], facts: [...unavailable.facts], steps: [...unavailable.steps], evidence: [...unavailable.evidence] },
       stepReviews: pendingStepReviews({ ...board, steps: [...steps.values()] }).filter(review => selected.steps.has(review.stepId)),
       omittedAttempts: (board.attempts ?? []).length - attempts.length,
+      omittedFactIndex: factIndex.omitted,
+      history: { facts: "xloom://history?kind=fact", attempts: "xloom://history?kind=attempt" },
       notice,
     },
   };
