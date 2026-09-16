@@ -4,7 +4,14 @@ import type { WikiStamp } from "../wiki/model.js";
 const text = (max = 2048) => z.string().trim().min(1).max(max).refine(value => !value.includes("\0"), "Must not contain NUL characters");
 const refs = z.array(text(256)).max(64).refine(ids => new Set(ids).size === ids.length, "References must be unique");
 const capabilityId = z.string().regex(/^C-[a-z0-9][a-z0-9_-]{0,63}$/);
-export const conditionsSchema = z.object({ scope: text(512).nullable(), identity: text(512).nullable(), environment: text(512).nullable(), stateVersion: text(512).nullable() }).strict();
+const unknownConditions = new Set(["", "unknown", "unspecified", "notrecorded", "未知", "未记录", "未确认"]);
+/** Normalize placeholders only; real identities, paths and versions remain case-sensitive.
+ * Reads use this too, so historical records need no destructive migration. */
+export function knownCondition(value: string | null): string | null {
+  return value === null || unknownConditions.has(value.normalize("NFKC").toLowerCase().replace(/[\s_-]+/g, "")) ? null : value;
+}
+const condition = z.string().trim().max(512).refine(value => !value.includes("\0"), "Must not contain NUL characters").nullable().transform(knownCondition);
+export const conditionsSchema = z.object({ scope: condition, identity: condition, environment: condition, stateVersion: condition }).strict();
 export const portSchema = z.object({ type: text(128), aliases: z.array(text(128)).max(8).default([]), description: text(1024) }).strict();
 export const capabilityProposalSchema = z.object({ id: capabilityId, title: text(512), status: z.enum(["candidate", "available", "unavailable"]),
   provides: z.array(portSchema).min(1).max(8), needs: z.array(portSchema).max(8), conditions: conditionsSchema,
@@ -37,8 +44,9 @@ export const portsMatch = (provide: Port, need: Port): boolean => typeNames(prov
 export function compareConditions(values: Conditions[]) {
   const conflicts: (keyof Conditions)[] = [], unknown: (keyof Conditions)[] = [];
   for (const key of ["scope", "identity", "environment", "stateVersion"] as const) {
-    if (values.some(value => value[key] === null)) unknown.push(key);
-    if (new Set(values.map(value => value[key]).filter(value => value !== null)).size > 1) conflicts.push(key);
+    const known = values.map(value => knownCondition(value[key]));
+    if (known.includes(null)) unknown.push(key);
+    if (new Set(known.filter(value => value !== null)).size > 1) conflicts.push(key);
   }
   return { status: conflicts.length ? "conflict" as const : unknown.length ? "unknown" as const : "compatible" as const, conflicts, unknown };
 }

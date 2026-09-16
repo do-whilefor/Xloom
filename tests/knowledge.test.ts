@@ -7,7 +7,7 @@ import { BlackboardStore } from "../src/store.js";
 import { capabilityIssues, chainIssues, knowledgeChanges, validateKnowledgeSubmission } from "../src/knowledge/model.js";
 import { discoverKnowledge } from "../src/knowledge/discovery.js";
 import { knowledgeContext } from "../src/knowledge/context.js";
-import { compareConditions, type CapabilityProposal, type ChainProposal, type Conditions } from "../src/knowledge/schema.js";
+import { compareConditions, conditionsSchema, type CapabilityProposal, type ChainProposal, type Conditions } from "../src/knowledge/schema.js";
 import { retrieveWiki } from "../src/wiki/retrieval.js";
 import { wikiIssues } from "../src/wiki/model.js";
 import { wikiFilename } from "../src/wiki/format.js";
@@ -176,5 +176,33 @@ describe("whole-plan candidate discovery", () => {
   it("does not equate unknown identity with a known identity or case-fold identity values", () => {
     expect(compareConditions([conditions, { ...conditions, identity: null }]).status).toBe("unknown");
     expect(compareConditions([conditions, { ...conditions, identity: "ACCOUNT-A" }]).status).toBe("conflict");
+  });
+  it.each([null, "", "  ", "unknown", " UNKNOWN ", "ｕｎｋｎｏｗｎ", "unspecified", "not_recorded", "not recorded", "未知", "未记录", "未确认"])("preserves unknown conditions for new and historical records: %s", value => {
+    for (const key of ["scope", "identity", "environment", "stateVersion"] as const) {
+      const unknown = { ...conditions, [key]: value };
+      expect(conditionsSchema.parse(unknown)[key]).toBeNull();
+      expect(compareConditions([unknown, unknown])).toEqual({ status: "unknown", conflicts: [], unknown: [key] });
+      expect(compareConditions([unknown, conditions])).toEqual({ status: "unknown", conflicts: [], unknown: [key] });
+    }
+    expect(compareConditions([conditions, conditions]).status).toBe("compatible");
+  });
+  it("does not treat not-applicable labels as unknown or wildcard conditions", () => {
+    expect(compareConditions([{ ...conditions, identity: "not_applicable" }, conditions]).status).toBe("conflict");
+    expect(conditionsSchema.parse({ ...conditions, identity: "UnknownUser" }).identity).toBe("UnknownUser");
+  });
+  it("keeps legacy unknown providers unverified and rejects unknown verified chains atomically", () => {
+    const { store } = withCapabilities([capability("C-export", ["job-id"]), capability("C-download", ["download"], ["job-id"])]);
+    const board = store.snapshot();
+    for (const cap of board.capabilities!) cap.conditions.identity = "unknown";
+    expect(discoverKnowledge(board).items[0]!.plan!.conditions).toEqual({ status: "unknown", conflicts: [], unknown: ["identity"] });
+    begin(store, "unknown-chain");
+    const output = execution();
+    for (const cap of output.capabilities!) cap.conditions.identity = "unknown";
+    output.chains![0]!.conditions.identity = "unknown";
+    output.chains![0]!.links[0]!.conditions.identity = "unknown";
+    const before = store.snapshot(), events = store.events();
+    expect(() => validateKnowledgeSubmission(before, output)).toThrow("known, jointly compatible");
+    expect(() => store.applyExecutionCheckpoint("unknown-chain", "invalid-unknown", output, usage)).toThrow("known, jointly compatible");
+    expect(store.snapshot()).toEqual(before); expect(store.events()).toEqual(events);
   });
 });
