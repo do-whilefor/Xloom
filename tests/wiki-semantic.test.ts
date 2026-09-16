@@ -7,6 +7,7 @@ import { wikiStructureFixture } from "./fixtures/wiki-structure.js";
 import { createTaskReader, type TaskReadContext } from "../src/wiki/read.js";
 import { createSemanticTaskReader, semanticLimits, type SemanticModel } from "../src/wiki/semantic.js";
 import { clearRetrievalSnapshots } from "../src/wiki/incremental.js";
+import { refKey } from "../src/wiki/catalog.js";
 import { createWorkspaceReadTool } from "../src/runtime/read.js";
 
 const fixtures: ReturnType<typeof wikiStructureFixture>[] = [], roots: string[] = [];
@@ -134,6 +135,75 @@ describe("model-assisted retrieval with authoritative source delivery", () => {
     expect(result.wiki.hits[0]).toMatchObject({ ref: { kind: "block", pageId: "WK-context", id: "B-scope" }, reason: "exact_reference" });
     expect(result.semantic).toMatchObject({ status: "exact_reference_local", requests: 0 });
     expect(f.generate).not.toHaveBeenCalled();
+  });
+  it.each(["wiki", "originals", "combined"])("excludes zero-score candidates from %s delivery and cached repeats", async mode => {
+    const f = fixture(), before = f.store.snapshot(), original = f.generate.getMockImplementation()!;
+    f.generate.mockImplementation(async (stage, input: any, signal) => stage === "rerank"
+      ? { scores: input.candidates.map((item: any) => ({ id: item.id, score: 0 })) } : original(stage, input, signal));
+    const target = path.replace("mode=wiki", `mode=${mode}`);
+    const result: any = await f.reader()(target);
+    expect(result.semantic).toMatchObject({ status: "applied" }); expect(result.semantic.zeroScoreCandidates).toBeGreaterThan(0);
+    expect(result.wiki.hits).toEqual([]); expect(result.wiki.records).toEqual([]);
+    expect(result.wiki.matchedCount).toBe(0); expect(result.wiki.matchQuality).toBe("no_informative_match");
+    if (mode !== "wiki") { expect(result.originals.hits).toEqual([]); expect(result.originals.deferredWindows).toBe(0); }
+    expect(result.complete).toBe(true); expect(result.answerSupport).toBe("not_assessed");
+    clearRetrievalSnapshots(); f.generate.mockClear();
+    const warm: any = await f.reader()(target);
+    expect(warm.wiki.hits).toEqual([]); expect(warm.originals?.hits ?? []).toEqual([]);
+    expect(warm.semantic.requests).toBe(0); expect(f.generate).not.toHaveBeenCalled();
+    expect(f.store.snapshot()).toEqual(before);
+  });
+  it("keeps zero-score required sources and conditions with a relevant judgment", async () => {
+    const f = fixture(), original = f.generate.getMockImplementation()!;
+    f.generate.mockImplementation(async (stage, input: any, signal) => stage === "rerank"
+      ? { scores: input.candidates.map((item: any) => ({ id: item.id, score: item.ref.pageId === "WK-flow" ? 1 : 0 })) } : original(stage, input, signal));
+    const result: any = await f.reader()(path.replace("limit=2", "limit=1"));
+    expect(result.wiki.hits.map((hit: any) => hit.ref.pageId)).toEqual(["WK-flow"]);
+    expect(result.wiki.records.some((doc: any) => doc.ref.id === "B-scope")).toBe(true);
+    expect(JSON.stringify(result.wiki.records)).toContain("Only alice / v1 was observed");
+    expect(JSON.stringify(result.wiki.records)).toContain("Cross-account consumption is unverified");
+  });
+  it("filters a question's zero-score candidates without hiding the question's own source anchors", async () => {
+    const f = fixture(), board = f.store.snapshot(), step = board.steps[0]!, original = f.generate.getMockImplementation()!;
+    step.gaps = [{ id: "gap-contact", missing: "客服电话", why: "Unknown", reopenWhen: "A sourced number is observed", needs: [],
+      conditions: { scope: null, identity: null, environment: null, stateVersion: null },
+      sources: [{ source: { kind: "fact", id: f.scopeId }, reason: "Keep the recorded conditions" }] }];
+    f.context.snapshot = () => board;
+    f.generate.mockImplementation(async (stage, input: any, signal) => stage === "rerank"
+      ? { scores: input.candidates.map((item: any) => ({ id: item.id, score: 0 })) } : original(stage, input, signal));
+    const result: any = await f.reader()(`xloom://question?stepId=${step.id}&gapId=gap-contact&strategy=semantic&budgetChars=64000`);
+    expect(result.semantic.status).toBe("applied"); expect(result.semantic.zeroScoreCandidates).toBeGreaterThan(0);
+    expect(result.originals.hits).toEqual([]); expect(result.complete).toBe(true);
+    expect(result.sourceContext.hits.map((hit: any) => hit.ref.id).sort()).toEqual([step.id, f.scopeId].sort());
+    expect(JSON.stringify(result.sourceContext.records)).toContain("alice / v1");
+    expect(result.answerSupport).toBe("not_assessed"); expect(step.gaps![0].review).toBeUndefined();
+  });
+  it.each(["wiki", "combined"])("keeps explicit references in mixed %s queries even at zero relevance", async mode => {
+    const f = fixture(), original = f.generate.getMockImplementation()!;
+    f.generate.mockImplementation(async (stage, input: any, signal) => stage === "rerank"
+      ? { scores: input.candidates.map((item: any) => ({ id: item.id, score: 0 })) } : original(stage, input, signal));
+    const evidence = f.store.snapshot().evidence[0]!;
+    const explicit = mode === "wiki" ? "WK-context B-scope" : evidence.id;
+    const result: any = await f.reader()(path.replace("mode=wiki", `mode=${mode}`).replace(encodeURIComponent(query), encodeURIComponent(`${explicit} ${query}`)));
+    expect(result.semantic.status).toBe("applied"); expect(result.semantic.zeroScoreCandidates).toBeGreaterThan(0);
+    expect(result.wiki.hits.some((hit: any) => hit.reason === "exact_reference" && hit.ref.id === (mode === "wiki" ? "B-scope" : evidence.id))).toBe(true);
+    if (mode === "combined") expect(result.originals.hits.some((hit: any) => hit.locator.evidenceId === evidence.id)).toBe(true);
+  });
+  it("keeps unranked lexical candidates when the bounded ranking batch scores every supplied candidate zero", async () => {
+    const f = fixture(), board = f.store.snapshot(), template = board.wikiPages![0]!, original = f.generate.getMockImplementation()!;
+    board.wikiPages!.push(...Array.from({ length: 25 }, (_, i) => ({ ...structuredClone(template), id: `WK-deferred-${i}`, blocks: [{
+      ...structuredClone(template.blocks[0]!), id: `B-deferred-${i}`, text: `label returned ${i}`, requiredBlockRefs: [], requiredBasis: [],
+    }] })));
+    f.context.snapshot = () => board;
+    const rejected = new Set<string>();
+    f.generate.mockImplementation(async (stage, input: any, signal) => {
+      if (stage !== "rerank") return original(stage, input, signal);
+      for (const item of input.candidates) rejected.add(refKey(item.ref));
+      return { scores: input.candidates.map((item: any) => ({ id: item.id, score: 0 })) };
+    });
+    const result: any = await f.reader()(path);
+    expect(result.semantic.deferredCandidates).toBeGreaterThan(0); expect(result.wiki.hits.length).toBeGreaterThan(0);
+    expect(result.wiki.hits.every((hit: any) => !rejected.has(refKey(hit.ref)))).toBe(true);
   });
   it("bounds cold enrichment and ranking, prioritizes query matches and progressively reuses hints", async () => {
     const f = fixture(), board = f.store.snapshot(), template = board.wikiPages![0]!;

@@ -74,11 +74,13 @@ export function readVerifiedArchive(evidence: Evidence, dataDir: string, workspa
   return Buffer.concat(chunks).toString("utf8");
 }
 
-export function searchOriginals(board: BoardSnapshot, dataDir: string, workspace: string, query: string, limit = 6, refresh = false, queryGroups?: QueryGroup[], preferredEvidence?: string[]) {
+export function searchOriginals(board: BoardSnapshot, dataDir: string, workspace: string, query: string, limit = 6, refresh = false, queryGroups?: QueryGroup[], preferredEvidence?: string[], excludedEvidence?: string[]) {
   if (!query.trim() || query.length > 4000 || !Number.isSafeInteger(limit) || limit < 1 || limit > 20) throw new Error("Use a nonempty query up to 4000 characters and limit 1–20.");
   const groups = compileQueryGroups(query, queryGroups);
   const tokens = [...new Set(groups.flatMap(group => group.alternatives.flatMap(item => item.tokens)))];
   const poolLimit = preferredEvidence ? 20 : limit;
+  const exactTokens = new Set(query.normalize("NFKC").toLowerCase().match(/[a-z0-9_-]+/g));
+  const excluded = new Set(excludedEvidence?.filter(id => !exactTokens.has(id.toLowerCase())));
   if (!tokens.length) throw new Error("Query has no searchable terms");
   return withIndexCache(dataDir, workspace, (db, index) => {
     type Hit = { locator: OriginalLocator; readPath: string; contextReadPath: string; snippet: string; score: number; matchedTerms: string[]; matches?: { groupId: string; expression: string; coverage: string }[] };
@@ -134,7 +136,7 @@ export function searchOriginals(board: BoardSnapshot, dataDir: string, workspace
     let matchedWindows = 0;
     const order = (a: Hit, b: Hit) => b.score - a.score || a.locator.evidenceId.localeCompare(b.locator.evidenceId) || a.locator.byteOffset - b.locator.byteOffset;
     for (const evidence of board.evidence) {
-      if (!windows.has(evidence.id) || !selected.has(evidence.id)) continue;
+      if (excluded.has(evidence.id) || !windows.has(evidence.id) || !selected.has(evidence.id)) continue;
       const offsets = new Set([...selected.get(evidence.id)!].map(unit => windows.get(evidence.id)![unit]?.offset));
       const candidates: Hit[][] = groups.map(() => []), counts = groups.map(() => 0); let matches = 0;
       try {

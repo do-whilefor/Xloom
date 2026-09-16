@@ -28,14 +28,14 @@ export function retrieveQuestion(board: BoardSnapshot, dataDir: string, workspac
   const questionSize = JSON.stringify({ ...base, question }).length;
   if (questionSize > budget / 2) return incomplete;
   const queryGroups = options.queryGroups ?? (options.query === undefined ? gapSearchGroups(question) : undefined);
-  const originals = searchOriginals(board, dataDir, workspace, query, options.limit ?? 3, options.refresh, queryGroups, options.preferredOriginals);
+  const originals = searchOriginals(board, dataDir, workspace, query, options.limit ?? 3, options.refresh, queryGroups, options.preferredOriginals, options.excludedOriginals);
   const anchors: RetrievalRef[] = [{ kind: "step", id: ref.stepId }, ...question.sources.map(item => item.source),
     ...question.candidates.map(item => ({ kind: "capability" as const, id: item.capabilityId })),
     ...originals.hits.flatMap(hit => [{ kind: "evidence" as const, id: hit.locator.evidenceId },
       ...board.facts.filter(fact => fact.evidenceIds.includes(hit.locator.evidenceId)).map(fact => ({ kind: "fact" as const, id: fact.id }))])];
   const unique = [...new Map(anchors.map(item => [JSON.stringify(item), item])).values()];
   const sourceContext = retrieveWiki(board, dataDir, workspace, queryGroups ? query : "", { anchors: unique, limit: Math.max(1, unique.length) + (queryGroups ? options.limit ?? 3 : 0),
-    queryGroups, preferredRefs: options.preferredRefs, budgetChars: Math.max(1, Math.floor((budget - questionSize) / 2)) }, options.index);
+    queryGroups, preferredRefs: options.preferredRefs, excludedRefs: options.excludedRefs, budgetChars: Math.max(1, Math.floor((budget - questionSize) / 2)) }, options.index);
   const missing = sourceContext.missingAnchors.length > 0 || sourceContext.records.some(record => "status" in record && record.status === "source_missing");
   const deferred = queryGroups ? sourceContext.budgetDeferredCount : sourceContext.deferredCount;
   const complete = originals.complete && !deferred && !missing;

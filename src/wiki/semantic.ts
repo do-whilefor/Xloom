@@ -24,7 +24,7 @@ export const semanticLimits = { indexDocuments: 8, indexInputChars: 48000, reran
 type Stage = Parameters<SemanticModel["generate"]>[0];
 type StageCost = { requests: number; cacheHits: number; inputChars: number; elapsedMs: number };
 type Counters = { requests: number; cacheHits: number; indexedDocuments: number; reusedDocuments: number;
-  deferredDocuments: number; oversizedDocuments: number; deferredCandidates: number; oversizedCandidates: number;
+  deferredDocuments: number; oversizedDocuments: number; deferredCandidates: number; oversizedCandidates: number; zeroScoreCandidates: number;
   stages: Record<Stage, StageCost> };
 
 async function generate(model: SemanticModel, stage: Stage, input: unknown, signal: AbortSignal | undefined, counters: Counters) {
@@ -172,11 +172,11 @@ export function createSemanticTaskReader(workspace: string, context: TaskReadCon
     p.set("budgetChars", String(budget));
     const cost = (): StageCost => ({ requests: 0, cacheHits: 0, inputChars: 0, elapsedMs: 0 });
     const model = context.semantic, counters: Counters = { requests: 0, cacheHits: 0, indexedDocuments: 0, reusedDocuments: 0,
-      deferredDocuments: 0, oversizedDocuments: 0, deferredCandidates: 0, oversizedCandidates: 0,
+      deferredDocuments: 0, oversizedDocuments: 0, deferredCandidates: 0, oversizedCandidates: 0, zeroScoreCandidates: 0,
       stages: { expand: cost(), index: cost(), rerank: cost() } };
     const deliver = (enhancement: SearchEnhancement, status: string) => {
       const output = read(url.href, { ...enhancement, semantic: { status, ...counters, limits: semanticLimits,
-        notice: "Retrieval hints only; read current sources and conditions. Deferred packages remain lexical candidates. inputChars counts serialized inputs, not billed tokens; elapsedMs measures model calls. No evidence validity or gap resolution is asserted." } });
+        notice: "Retrieval hints only; read current sources and conditions. Zero-score roots are excluded except exact references and required source context; deferred packages remain lexical candidates. inputChars counts serialized inputs, not billed tokens; elapsedMs measures model calls. No evidence validity or gap resolution is asserted." } });
       // Continuations must retain the requested strategy, not silently revert.
       if ("nextReadPath" in output && typeof output.nextReadPath === "string") {
         const next = new URL(output.nextReadPath); next.searchParams.set("strategy", "semantic"); output.nextReadPath = next.href;
@@ -236,7 +236,10 @@ export function createSemanticTaskReader(workspace: string, context: TaskReadCon
       let cursor = 0;
       const ordered = candidates.map(item => scores.has(item.id) ? ranked[cursor++]! : item);
       const preferredRefs = ordered.map(item => item.ref), preferredOriginals = preferredRefs.filter(ref => ref.kind === "evidence").map(ref => ref.id);
-      return deliver({ queryGroups, preferredRefs, preferredOriginals, index }, "applied");
+      const excludedRefs = candidates.filter(item => scores.get(item.id) === 0).map(item => item.ref);
+      counters.zeroScoreCandidates = excludedRefs.length;
+      const excludedOriginals = excludedRefs.filter(ref => ref.kind === "evidence").map(ref => ref.id);
+      return deliver({ queryGroups, preferredRefs, preferredOriginals, excludedRefs, excludedOriginals, index }, "applied");
     } catch {
       signal?.throwIfAborted();
       return deliver({}, "failed_lexical_fallback");

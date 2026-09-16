@@ -77,6 +77,7 @@ try {
       conditionsRetained: !item.expected || text.includes("alice") && text.includes("v1") && text.includes("unverified"),
       noUnsupportedSuccess: response.crossAccountDownloadVerified === false,
       unknownHandled: item.expected !== null || response.answerability === "insufficient",
+      unknownHasNoUnrelatedHits: item.expected !== null || result.wiki.hits.length === 0,
       citationsValid: response.citations.every(ref => known.has(refKey(ref as any))) && (!item.expected || response.citations.length > 0),
       persistentWarmReuse: warm.semantic?.requests === 0 && warm.semantic?.cacheHits > 0,
       unchangedBoard: JSON.stringify(f.store.snapshot()) === before };
