@@ -4,7 +4,7 @@ import { estimateTokens } from "@earendil-works/pi-coding-agent";
 import { defaultConfig } from "../src/config.js";
 import { decisionSchema, executionSchema } from "../src/schema.js";
 import { ChatSession, chatPrompt } from "../src/runtime/chat.js";
-import { buildRunPrompt } from "../src/runtime/prompts.js";
+import { buildRunPrompt, buildRunTaskCore } from "../src/runtime/prompts.js";
 import { powerShellPrompt } from "../src/runtime/powershell.js";
 import { stagePath } from "../src/runtime/stage.js";
 import { createWorkspaceReadTool } from "../src/runtime/read.js";
@@ -53,6 +53,24 @@ function promptFixture(mode: RunRequest["mode"], checkpoints = false): RunReques
 }
 
 describe("compact built-in prompts", () => {
+  it("rebuilds a small task core from current public state with exact constraints and unresolved branches", () => {
+    const request = promptFixture("execute", true);
+    request.blackboardPath = join(process.cwd(), "synthetic-core/blackboard.md");
+    request.snapshot.config.context = "只能修改 auth.py；GET /api/v2/user 需要 bob/v3；不要重放已完成的写操作。";
+    request.snapshot.hints = [{ id: "H-1", content: "Correction: tenant-b only; tenant-a is withdrawn", createdAt: "fixture" }];
+    request.snapshot.facts = Array.from({ length: 2000 }, (_, i) => ({ id: `F-${i}`, description: "Historical source body ".repeat(30), stepId: null, evidenceIds: [] }));
+    request.snapshot.goals = [{ id: "G0", parentId: null, description: "Original goal", status: "active", factIds: [] },
+      { id: "G-open", parentId: "G0", description: "Unresolved identity comparison", status: "active", factIds: [] }];
+    const before = buildRunTaskCore(request), core = JSON.parse(before.split("\n").at(-1)!);
+    expect(before.length).toBeLessThan(6500); expect(before).not.toContain("Historical source body");
+    expect(core.project.context).toBe(request.snapshot.config.context); expect(core.hints).toEqual(request.snapshot.hints);
+    expect(core.goals.map((goal: any) => goal.id)).toEqual(["G0", "G-open"]);
+    request.snapshot.revision++;
+    request.snapshot.hints.push({ id: "H-2", content: "Latest: use bob/v4", createdAt: "later" });
+    const next = JSON.parse(buildRunTaskCore(request).split("\n").at(-1)!);
+    expect(next.revision).toBe(1); expect(next.hints[1].content).toBe("Latest: use bob/v4");
+    expect(next.checkpointFile).toBe(stagePath(request));
+  });
   it("focuses planning on committed deltas without sharing them with Execute or bypassing review", () => {
     const handoff = { sourceStepId: "S1", factIds: ["F1"], evidenceIds: ["E1"], findingIds: ["V1"] };
     for (const mode of ["decide", "metacog", "execute"] as const) {

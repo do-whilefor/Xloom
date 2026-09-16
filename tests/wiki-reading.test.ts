@@ -28,6 +28,18 @@ const search = "xloom://search?mode=wiki&query=BridgeAlias&budgetChars=64000";
 const flow = recordReadPath({ kind: "block", pageId: "WK-flow", id: "B-judgment" }) + "&budgetChars=64000";
 
 describe("verified original reading and same-role overlap", () => {
+  it("resets delivery hints after compaction while continuing to deliver full source bodies", () => {
+    const f = setup(), context = { epoch: 0, dataDir: f.store.dataDir, snapshot: () => f.board };
+    const read = createTaskReader(f.root, context) as (path: string) => any;
+    const first = read(search), path = first.wiki.records.find((record: any) => record.ref.kind === "evidence").originalReadPath;
+    read(path); expect(read(search).reading.repeatedRecords).toBeGreaterThan(0);
+    expect(read(path).reading.repeatedOriginalRange).toBe(true);
+    context.epoch++;
+    const fresh = read(search);
+    expect(fresh.reading.repeatedRecords).toBe(0); expect(fresh.reading.fullyDeliveredOriginals).toBe(0);
+    expect(fresh.retrievalProgress).toBe("inspect_material"); expect(fresh.wiki.records).toEqual(first.wiki.records);
+    expect(read(path).reading.repeatedOriginalRange).toBeUndefined();
+  });
   it("diagnoses unsupported page records and directs callers to a valid block's page metadata", () => {
     const f = setup();
     expect(() => f.read("xloom://record?kind=page&id=WK-flow")).toThrow("kind=block&page=<page ID>&id=<block ID>");

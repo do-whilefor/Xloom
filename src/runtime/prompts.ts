@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import type { RunRequest } from "../types.js";
-import { projectContext, projectStep } from "../loop/context.js";
+import { pendingStepReviews, projectContext, projectStep } from "../loop/context.js";
 import { stagePath } from "./stage.js";
 import { projectMethods } from "../methods.js";
 import { knowledgeContext } from "../knowledge/context.js";
@@ -37,6 +37,27 @@ Refs accept local refs or exact committed IDs; Findings inherit Facts' evidence.
 Optional attempts:[{hypothesis:"stable ID",scope:"object/entry boundary",identity:"tested identity",stateVersion:"environment/session",baseline:"control",changedVariable:"single changed condition",outcome:"supports|refutes|inconclusive|blocked",observation:"result",evidenceRefs:["e1"]}]. Reuse stable hypothesis/condition labels. Only evidenced supports/refutes count as progress under recorded conditions, not timestamps, files or paraphrases.`;
 
 const checkpointProtocol = `Checkpoints: write(path=checkpointFile,content={id:"unique-batch-id",execution:{same contract},yieldToDecide:false}); use object content. Evidence: only ref/path/description. Rejected writes create no file; rewrite, never edit checkpointFile. Acceptance commits; reuse returned IDs/keys. Submit uncommitted records only. yieldToDecide:true requests planning, not Goal completion.`;
+
+export const TASK_CORE_MARKER = "[XLOOM TASK CORE]";
+/** Rebuild from current public state on compaction; never summarize constraints
+ * or freeze the initial blackboard snapshot for the lifetime of a run. */
+export function buildRunTaskCore(request: RunRequest): string {
+  const board = request.snapshot, checkpointFile = request.mode === "execute" && request.onCheckpoint ? stagePath(request) : undefined;
+  const protocol = request.mode === "execute" ? [executionProtocol, checkpointFile ? checkpointProtocol : undefined].filter(Boolean).join("\n") : decisionProtocol;
+  return `${TASK_CORE_MARKER}\n${protocol}\n\n${JSON.stringify({
+    revision: board.revision, project: { title: board.config.title, goal: board.config.goal, scope: board.config.scope, context: board.config.context },
+    hints: board.hints.map(({ id, content, createdAt }) => ({ id, content, createdAt })),
+    goals: board.goals.filter(goal => goal.parentId === null || goal.status === "active").map(({ id, description, parentId, status, factIds }) => ({ id, description, parentId, status, factIds })),
+    pendingSteps: board.steps.filter(step => step.status === "ready" || step.status === "claimed").map(({ id, goalId, description, from }) => ({ id, goalId, description, from })),
+    openFindings: board.findings.filter(finding => finding.status !== "closed" || finding.observationReview).map(({ id, title, status, next, observationReview }) => ({ id, title, status, next, observationReview })),
+    stepReviews: pendingStepReviews(board),
+    assignedStep: request.step ? projectStep(board.steps.find(step => step.id === request.step!.id) ?? request.step) : undefined,
+    blackboardFile: request.blackboardPath, wiki: wikiContext(request), trigger: request.trigger,
+    history: { facts: "xloom://history?kind=fact", attempts: "xloom://history?kind=attempt" },
+    workspace: request.workspace, artifacts: request.mode === "execute" ? join(request.runDir, "artifacts") : undefined, checkpointFile,
+    notice: "Current public task state. Earlier snapshots are historical; read current source packages and originals as needed. Unlisted history remains available, never absent or permission to repeat completed actions.",
+  })}`;
+}
 
 export function buildRunPrompt(request: RunRequest): { systemPrompt: string; userPrompt: string } {
   const context = request.context ?? projectContext(request);

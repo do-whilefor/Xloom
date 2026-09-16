@@ -14,6 +14,8 @@ import { readHistory } from "./history.js";
 
 export interface TaskReadContext {
   dataDir: string; snapshot: () => BoardSnapshot; materialBaseline?: Record<string, string>;
+  /** Changed by the owning runtime after replacing its active context. */
+  epoch?: number;
   onAnnounced?: (items: { key: string; signature: string }[]) => void;
   semantic?: SemanticModel;
 }
@@ -21,8 +23,7 @@ export interface TaskReadContext {
  * network, alternate session, or implicit research-state mutation. */
 export function createTaskReader(workspace: string, context: TaskReadContext) {
   const seen = new Map<string, string>();
-  const trackReading = createReadingTracker();
-  const sourcePage = createSourcePager();
+  let trackReading = createReadingTracker(), sourcePage = createSourcePager(), epoch = context.epoch;
   const baseline = { ...context.materialBaseline };
   const announce = (items: { key: string; signature: string }[]) => {
     for (const item of items) baseline[item.key] = item.signature;
@@ -42,6 +43,9 @@ export function createTaskReader(workspace: string, context: TaskReadContext) {
     return trackReading(JSON.stringify(hinted).length <= budget ? hinted : result, board, budget);
   };
   return (path: string, enhancement: SearchEnhancement = {}) => {
+    if (context.epoch !== epoch) {
+      epoch = context.epoch; seen.clear(); trackReading = createReadingTracker(); sourcePage = createSourcePager();
+    }
     const url = new URL(path), p = url.searchParams;
     if (url.protocol !== "xloom:" || url.username || url.password || url.port || url.hash || url.pathname && url.pathname !== "/") throw new Error("Invalid xloom read path");
     const allowed = url.hostname === "history" ? ["kind", "offset", "limit", "budgetChars", "signature"]

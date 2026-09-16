@@ -7,7 +7,7 @@ import { createWorkspaceEditTool } from "./edit.js";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { AgentRunner, RunRequest, RunResult, RuntimeEvent, Usage } from "../types.js";
 import { addUsage, modelUsage } from "../usage.js";
-import { buildRunPrompt } from "./prompts.js";
+import { buildRunPrompt, buildRunTaskCore } from "./prompts.js";
 import { resolveModel, modelThinkingLevel, type ModelResolver } from "./models.js";
 import { createRunBudget } from "./run-budget.js";
 import { createCheckedPowerShellTool } from "./powershell.js";
@@ -227,15 +227,16 @@ export class PiRunner implements AgentRunner {
         return validated.data;
       }); }
       const submission = submissionTool(request.mode, output => validateText(JSON.stringify(output)));
-      const readTool = createWorkspaceReadTool(request.workspace, request.mode === "execute" ? join(request.runDir, "artifacts") : undefined,
-        request.blackboardPath ? { dataDir: dirname(request.blackboardPath), snapshot: () => stage?.snapshot ?? request.snapshot,
+      const taskReading = request.blackboardPath ? { epoch: 0, dataDir: dirname(request.blackboardPath), snapshot: () => stage?.snapshot ?? request.snapshot,
           semantic: createRetrievalModel(selected, (...args) => mainStream(...args), consumed => {
             const added = modelUsage(consumed);
             addUsage(usage, added);
             emit({ type: "usage", mode: request.mode, text: "", usage: added });
           }, request.id, () => canRequest() && !finalRequest(), redact),
           materialBaseline: { ...request.materialBaseline, ...Object.fromEntries(request.materials?.items.map(item => [item.key, item.signature]) ?? []) },
-          onAnnounced: items => { if (request.materials) (request.materialReads ??= []).push(...items); } } : undefined);
+          onAnnounced: (items: { key: string; signature: string }[]) => { if (request.materials) (request.materialReads ??= []).push(...items); } } : undefined;
+      const readTool = createWorkspaceReadTool(request.workspace, request.mode === "execute" ? join(request.runDir, "artifacts") : undefined, taskReading);
+      const contextMaintenance = taskReading ? { taskCore: () => redact(buildRunTaskCore({ ...request, snapshot: stage?.snapshot ?? request.snapshot })) } : undefined;
       if (request.mode === "execute") executionTools = executeTools(request.workspace, join(request.runDir, "artifacts"));
       const tools: AgentTool[] = request.mode === "execute" ? executionTools.map(tool => tool.name === "read" ? readTool : tool.name === "write" && stage ? stage.tool
         : tool.name === "edit" && stage ? createWorkspaceEditTool(request.workspace, join(request.runDir, "artifacts", "checkpoint.json")) : tool) : [readTool];
@@ -298,9 +299,10 @@ export class PiRunner implements AgentRunner {
           if (!canRequest()) throw new Error("Explicit invocation budget exhausted before context maintenance.");
           const next = await budget.prepareNextTurnWithContext(context);
           const base = next?.context ?? context.context;
-          const prepared = await prepareContext(base.messages, selected.model, request.signal, finalRequest() ? undefined : summarizer, false, base);
+          const prepared = await prepareContext(base.messages, selected.model, request.signal, finalRequest() ? undefined : summarizer, false, base, contextMaintenance);
           if (!canRequest()) throw new Error("Explicit invocation budget exhausted during context maintenance.");
           if (prepared.compacted) {
+            if (taskReading) taskReading.epoch++;
             agent!.state.messages = prepared.messages;
             await persist();
             emit({ type: "notice", mode: request.mode, text: `Private context compacted (${prepared.estimatedTokensBefore} → ${prepared.estimatedTokensAfter} estimated tokens); original evidence remains available.` });
@@ -379,9 +381,10 @@ export class PiRunner implements AgentRunner {
             agent!.shouldStopAfterTurn = async context => { await budget.shouldStopAfterTurn(context); return true; };
           }
           const prepared = await prepareContext(agent!.state.messages, selected.model, request.signal, finalRequest() ? undefined : summarizer, false,
-            { systemPrompt: agent!.state.systemPrompt, tools: agent!.state.tools });
+            { systemPrompt: agent!.state.systemPrompt, tools: agent!.state.tools }, contextMaintenance);
           if (completingJson) jsonBaseMessages = prepared.messages.slice(0, -1);
           if (prepared.compacted) {
+            if (taskReading) taskReading.epoch++;
             agent!.state.messages = prepared.messages;
             await persist();
             emit({ type: "notice", mode: request.mode, text: `Private context compacted (${prepared.estimatedTokensBefore} → ${prepared.estimatedTokensAfter} estimated tokens); original evidence remains available.` });

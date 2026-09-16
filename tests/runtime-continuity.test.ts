@@ -6,6 +6,7 @@ import type { AgentMessage, StreamFn } from "@earendil-works/pi-agent-core";
 import { AssistantMessageEventStream, type AssistantMessage, type Model, type Usage } from "@earendil-works/pi-ai";
 import { CONTEXT_SUMMARY_MARKER, createContextSummarizer, isTransientModelFailure, loadCheckpoint, prepareContext, recoverableMessages, saveCheckpoint, requireContextCapacity,
   type CheckpointIdentity, type CheckpointState } from "../src/runtime/continuity.js";
+import { nativeReadBatch, pruneReadBatches } from "../src/runtime/context-pruning.js";
 
 const model: Model<"openai-completions"> = {
   id: "mock", name: "mock", api: "openai-completions", provider: "test", baseUrl: "https://example.invalid/v1",
@@ -24,6 +25,12 @@ function batch(id: string, text = "observation ".repeat(90)): AgentMessage[] {
     { role: "toolResult", toolCallId: id, toolName: "read", content: [{ type: "text", text }], isError: false, timestamp: 0 }];
 }
 const history = (): AgentMessage[] => [user(), ...Array.from({ length: 9 }, (_, index) => batch(`call-${index}`)).flat()];
+function nativeBatch(id: string, text = "CSRF token mismatch; old session_id. alice/v1 only; NOT a global failure."): AgentMessage[] {
+  return [assistant([{ type: "toolCall", id, name: "read", arguments: { path: "xloom://original?evidenceId=E-1&sha256=fixture" } }], "toolUse"),
+    { role: "toolResult", toolCallId: id, toolName: "read", content: [{ type: "text", text: JSON.stringify({ type: "original_read", integrity: "verified", text,
+      locator: { evidenceId: "E-1", sha256: "fixture", byteOffset: 0, byteLength: text.length }, sourceContextReadPath: "xloom://record?kind=evidence&id=E-1" }) }],
+      details: { nativeRetrieval: true }, isError: false, timestamp: 0 }];
+}
 async function location() {
   const directory = await mkdtemp(join(tmpdir(), "xloom-continuity-"));
   dirs.push(directory);
@@ -57,6 +64,50 @@ describe("provider failure classification", () => {
 });
 
 describe("long-running context maintenance", () => {
+  it("replaces a large initial snapshot with a current exact task core before paying for a summary", async () => {
+    const selected = { ...model, contextWindow: 8000 }, messages = [user("old snapshot ".repeat(3000)), ...nativeBatch("once")];
+    const before = structuredClone(messages), summarize = vi.fn();
+    const core = "[XLOOM TASK CORE]\nGoal: inspect CSRF. 只能修改 auth.py. Current identity=bob/v3. F-1 is superseded by F-2.";
+    const result = await prepareContext(messages, selected, undefined, summarize, false, undefined, { taskCore: () => core });
+    expect(result.compacted).toBe(true); expect(summarize).not.toHaveBeenCalled();
+    expect(result.messages[0]!.content).toBe(core); expect(result.messages.slice(1)).toEqual(messages.slice(1));
+    expect(result.maintenance?.taskCoreRebuilt).toBe(true); expect(messages).toEqual(before);
+    expect((await prepareContext(result.messages, selected, undefined, summarize, false, undefined, { taskCore: () => core })).compacted).toBe(false);
+  });
+  it("prunes exact repeated native reads atomically without replaying tools or calling a summary model", async () => {
+    const messages = [user(), ...Array.from({ length: 8 }, (_, i) => nativeBatch(String(i), "unchanged original ".repeat(110))).flat()];
+    const summarize = vi.fn(), before = structuredClone(messages);
+    const result = await prepareContext(messages, { ...model, contextWindow: 5000 }, undefined, summarize, false, undefined,
+      { taskCore: () => "[XLOOM TASK CORE]\nKeep original constraints; read current evidence as needed." });
+    expect(result.compacted).toBe(true); expect(result.maintenance?.removedReadBatches).toBe(6);
+    expect(summarize).not.toHaveBeenCalled(); expect(result.messages.slice(1)).toEqual(messages.slice(-4)); expect(messages).toEqual(before);
+  });
+  it.each(["user", "mutation", "narration", "changed-original"])("preserves repeated observations across a %s boundary", boundary => {
+    const earlier = nativeBatch("earlier"), later = nativeBatch("later", boundary === "changed-original" ? "New version returns success." : undefined);
+    let middle: AgentMessage[] = [];
+    if (boundary === "user") middle = [user("Retry under the newly supplied identity")];
+    if (boundary === "mutation") middle = [assistant([{ type: "toolCall", id: "write", name: "write", arguments: { path: "auth.py", content: "changed" } }], "toolUse"),
+      { role: "toolResult", toolCallId: "write", toolName: "write", content: [{ type: "text", text: "written" }], isError: false, timestamp: 0 }];
+    if (boundary === "narration") (earlier[0] as AssistantMessage).content.unshift({ type: "text", text: "Critical observation: still denied after the previous action." });
+    const messages = [user(), ...earlier, ...middle, ...later, ...batch("tail")];
+    const batches = [{ start: 0, end: 1 }, { start: 1, end: 3 }, ...(middle.length ? [{ start: 3, end: 3 + middle.length }] : []),
+      { start: 3 + middle.length, end: 5 + middle.length }, { start: 5 + middle.length, end: 7 + middle.length }];
+    expect(pruneReadBatches(messages, batches).removed).toBe(0);
+  });
+  it("retains native original bytes through multiple lossy summaries and keeps corrections outside the summary", async () => {
+    const exact = nativeBatch("decisive"), selected = { ...model, contextWindow: 5000 }, core = "[XLOOM TASK CORE]\n只能修改 auth.py; bob/v3 supersedes alice/v1.";
+    let messages = [user(), ...exact, ...Array.from({ length: 20 }, (_, i) => batch(`filler-${i}`)).flat()];
+    const summarize = vi.fn(async (_messages: AgentMessage[]) => ({ text: "Exploration summarized without any identifiers." }));
+    for (let round = 0; round < 3; round++) {
+      const result = await prepareContext(messages, selected, undefined, summarize, false, undefined, { taskCore: () => core });
+      expect(result.compacted).toBe(true); expect(result.maintenance?.retainedReadBatches).toBe(1);
+      expect(result.messages[0]!.content).toBe(core); expect(result.messages).toContain(exact[1]);
+      expect(nativeReadBatch(exact)?.original).toBe(true);
+      const transcript = summarize.mock.calls.at(-1)![0] as AgentMessage[];
+      expect(transcript).not.toContain(exact[1]);
+      messages = [...result.messages, ...Array.from({ length: 20 }, (_, i) => batch(`round-${round}-${i}`)).flat()];
+    }
+  });
   it("compacts for complete request pressure when provider usage is unavailable", async () => {
     const selected = { ...model, contextWindow: 16000 };
     const messages = history();
