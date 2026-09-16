@@ -10,6 +10,8 @@ export interface RetrievalDocument {
   text: string;
   path: string;
   sources: WikiSource[];
+  /** Directory membership is navigation, not an evidential dependency. */
+  navigation?: WikiSource[];
   requiredBlocks?: RetrievalRef[];
   breadcrumb?: { id: string; title: string }[];
   retrievalMetadata?: { page: WikiMetadata; block: WikiMetadata };
@@ -66,12 +68,14 @@ function collectDocuments(board: BoardSnapshot) {
     const ref = { kind, id: item.id }, record = wikiRecord(board, ref)!;
     const title = "title" in item ? String(item.title) : "description" in item ? String(item.description) : "hypothesis" in item ? String(item.hypothesis) : ref.id;
     const sources = [...record.dependencies];
-    if ("goalId" in item) sources.push({ kind: "goal", id: item.goalId });
-    if ("parentId" in item && item.parentId) sources.push({ kind: "goal", id: item.parentId });
+    const navigation: WikiSource[] = [];
+    if ("goalId" in item) navigation.push({ kind: "goal", id: item.goalId });
+    if ("parentId" in item && item.parentId) navigation.push({ kind: "goal", id: item.parentId });
     if ("stepId" in item && item.stepId) sources.push({ kind: "step", id: item.stepId });
     const unique = [...new Map(sources.map(source => [refKey(source), source])).values()];
-    documents.push({ ref, title, text: JSON.stringify(record.value), path: `pages/${wikiFilename(kind, item.id)}`, sources: unique,
+    documents.push({ ref, title, text: JSON.stringify(record.value), path: `pages/${wikiFilename(kind, item.id)}`, sources: unique, ...(navigation.length ? { navigation } : {}),
       issues: [...unique.filter(source => !wikiRecord(board, source)).map(source => ({ code: "source_missing", source })),
+        ...navigation.filter(source => !wikiRecord(board, source)).map(source => ({ code: "navigation_missing", source })),
         ...("reviewIssues" in record.value && Array.isArray(record.value.reviewIssues) ? record.value.reviewIssues.map(code => ({ code: String(code), source: ref })) : [])] });
     fields.push({ title, body: searchable(record.value) });
   }
@@ -149,6 +153,7 @@ export function organizeWiki(board: BoardSnapshot, index = buildRetrievalIndex(b
     counts: { records: index.documents.length - blocks.length, pages: board.wikiPages?.length ?? 0, blocks: blocks.length },
     reviewRequired: index.documents.filter(doc => doc.issues.length).map(doc => ({ ref: doc.ref, path: doc.path, issues: doc.issues })),
     missingSources: index.documents.flatMap(doc => doc.issues.filter(issue => ["source_missing", "required_block_missing"].includes(issue.code)).map(issue => ({ ref: doc.ref, source: issue.source }))),
+    missingNavigation: index.documents.flatMap(doc => doc.issues.filter(issue => issue.code === "navigation_missing").map(issue => ({ ref: doc.ref, source: issue.source }))),
     supersededFacts: board.facts.filter(fact => board.facts.some(other => other.supersedes === fact.id)).map(fact => ({ id: fact.id,
       replacedBy: board.facts.filter(other => other.supersedes === fact.id).map(other => other.id) })),
     duplicateText: [...duplicateGroups.values()].filter(group => group.length > 1).map(refs => ({ refs, action: "Review source and condition differences; identical text does not establish identical applicability." })),

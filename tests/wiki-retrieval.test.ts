@@ -62,7 +62,7 @@ describe("task-local lexical RAG and organization", () => {
     expect(result.records.filter(item => JSON.stringify(item).includes('"ref":{"kind":"fact","id":"F-old"}'))).toHaveLength(1);
     expect(organizeWiki(board).missingSources).toContainEqual(expect.objectContaining({ source: { kind: "fact", id: "F-missing" } }));
     board.goals[0]!.parentId = "G-missing";
-    expect(organizeWiki(board).missingSources).toContainEqual(expect.objectContaining({ source: { kind: "goal", id: "G-missing" } }));
+    expect(organizeWiki(board).missingNavigation).toContainEqual(expect.objectContaining({ source: { kind: "goal", id: "G-missing" } }));
   });
 
   it("defers an entire large judgment/source package instead of truncating conditions", () => {

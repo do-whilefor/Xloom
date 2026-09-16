@@ -18,8 +18,8 @@ function setup() {
   const root = mkdtempSync(join(tmpdir(), "xloom-source-pages-")), fixture = nativeFixture(root);
   opened.push({ root, fixture });
   const board = fixture.store.snapshot();
-  // Incident-derived shape only: evidence reads expand through a shared Goal
-  // into many facts/attempts. All values and originals are synthetic.
+  // Explicit causal dependencies require a large source package even though
+  // shared Goal membership alone no longer expands into unrelated facts.
   board.capabilities = []; board.wikiPages = [];
   board.evidence = Array.from({ length: 14 }, (_, i) => ({ ...board.evidence[0]!, id: `E-page-${i}`,
     description: `Synthetic evidence ${i}: ${"Retain identity/version and observed counterexamples. ".repeat(18)}` }));
@@ -27,6 +27,7 @@ function setup() {
     description: `Observation ${i}; identity alice; v1 only; other identities UNVERIFIED. ${"Full synthetic qualification. ".repeat(35)}`,
     evidenceIds: [board.evidence[i]!.id, board.evidence[i + 1]!.id, board.evidence[13]!.id] }));
   board.goals[0]!.factIds = board.facts.map(f => f.id);
+  board.steps[0]!.from = board.facts.map(f => f.id);
   board.attempts = board.facts.map((f, i) => ({ id: `A-page-${i}`, stepId: board.steps[0]!.id, runId: "seed",
     hypothesis: `H-${i}`, scope: "local fixture", identity: "alice", stateVersion: "v1", baseline: "owned object", changedVariable: "object owner",
     outcome: "refutes" as const, observation: `DENIED; do not infer endpoint absence. ${"Recorded test conditions. ".repeat(40)}`,
