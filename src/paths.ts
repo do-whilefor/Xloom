@@ -26,6 +26,7 @@ export function workspaceLockPath(workspace: string): string {
 }
 
 export function projectConfigPath(workspace: string): string { return path.join(projectDirectory(workspace), "settings.json"); }
+export function globalConfigPath(): string { return path.join(xloomHome(), "settings.json"); }
 
 export function ensureProject(workspace: string): string {
   const identity = workspaceIdentity(workspace);

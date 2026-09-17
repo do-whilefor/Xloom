@@ -64,6 +64,22 @@ API Key 按供应商分别保存。例如 `opencode-go`（OpenCode Go）、`open
 
 配置与运行数据默认保存在用户目录的 `~/.xloom/` 中。使用 `/paths` 查看实际位置，或将环境变量 `XLOOM_HOME` 设为其他数据目录的绝对路径。
 
+`~/.xloom/settings.json` 是全局设置入口：模型、思考强度 `thinking`、运行限制 `limits` 和 Chrome 设置都从这里读取，已有项目也会生效。`/model` 将选择保存到这个文件，并保留各角色原有的思考强度；`/login` 将凭据保存到同目录的 `auth.json`。手工编辑后重启 Xloom；已运行的会话不会中途自动切换配置。
+
+例如，在 `settings.json` 的 `models` 中设置（其余字段保留）：
+
+```json
+"models": {
+  "chat": { "provider": "opencode-go", "model": "deepseek-v4-flash", "thinking": "high" },
+  "decide": { "provider": "opencode-go", "model": "deepseek-v4-flash", "thinking": "max" },
+  "execute": { "provider": "opencode-go", "model": "deepseek-v4-flash", "thinking": "high" }
+}
+```
+
+`thinking` 可填 `off`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`，实际档位按模型支持情况映射；省略时使用最高支持档位。省略 `chat` 时普通聊天使用 `execute` 的配置。
+
+项目文件继续保留各自的目标、范围和上下文，旧的模型副本不再覆盖全局设置。需要独立配置时，使用 `xloom --config <完整项目配置文件>`；该模式的模型修改仅保存到指定文件。`/paths` 的 `config` 显示当前设置保存位置，`globalConfig`、`projectConfig`、`auth` 分别显示全局、项目和凭据文件。`pi-import.json` 只是一次性 Pi 导入记录，不是设置入口。
+
 ### 开始研究
 
 在交互界面中输入目标、授权范围和完成条件：

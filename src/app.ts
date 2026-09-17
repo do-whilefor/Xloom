@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import path from "node:path";
 import type { AuthInteraction, AuthType } from "@earendil-works/pi-ai";
-import { CHAT_GOAL, saveConfig } from "./config.js";
+import { CHAT_GOAL, ensureGlobalSettings, saveConfig, saveGlobalSettings, withGlobalSettings } from "./config.js";
 import { LoopController } from "./controller.js";
 import { BlackboardStore } from "./store.js";
 import { ChatSession, type ChatRequest } from "./runtime/chat.js";
@@ -11,10 +11,13 @@ import { SettingsService, type ModelDisplayInfo } from "./runtime/settings.js";
 import { projectConfigSchema, usageSchema } from "./schema.js";
 import { addUsage } from "./usage.js";
 import { listTasks, readSavedBoard, selectTask, WorkspaceLock } from "./workspace.js";
-import { ensureProject, projectDirectory, xloomHome } from "./paths.js";
+import { ensureProject, globalConfigPath, projectConfigPath, projectDirectory, xloomHome } from "./paths.js";
+import { FileLock } from "./lock.js";
 import type { AgentRole, AgentRunner, BoardSnapshot, LoopEvent, ModelConfig, ProjectConfig, Usage } from "./types.js";
 
 export interface AppOptions {
+  /** Explicit --config files are independent; ordinary projects use global settings. */
+  globalSettings?: boolean;
   runner?: AgentRunner;
   chat?: { send(request: ChatRequest): Promise<Usage>; reset(): void; close?(): void; getUsage?(): Usage; history?(): ReturnType<ChatSession["history"]> };
   settings?: Pick<SettingsService, "listModels" | "listProviders" | "login" | "logout"> & Partial<Pick<SettingsService, "describeModel">>;
@@ -24,6 +27,7 @@ export interface AppOptions {
 export class AppController {
   readonly workspace: string;
   private config: ProjectConfig;
+  private readonly globalSettings: boolean;
   private readonly lock: WorkspaceLock;
   private readonly runner: AgentRunner;
   private readonly chatSession: NonNullable<AppOptions["chat"]>;
@@ -47,7 +51,10 @@ export class AppController {
   constructor(workspace: string, private readonly configPath: string, config: ProjectConfig, options: AppOptions = {}) {
     this.workspace = realpathSync(workspace);
     ensureProject(this.workspace);
-    this.config = projectConfigSchema.parse(config);
+    this.globalSettings = options.globalSettings ?? path.resolve(configPath) === projectConfigPath(this.workspace);
+    config = projectConfigSchema.parse(config);
+    if (this.globalSettings) ensureGlobalSettings(config);
+    this.config = this.globalSettings ? withGlobalSettings(config) : config;
     this.runner = options.runner ?? new PiRunner();
     this.chatSession = options.chat ?? new ChatSession({ storageDirectory: path.join(projectDirectory(this.workspace), "chats") });
     this.settings = options.settings ?? new SettingsService();
@@ -154,7 +161,9 @@ export class AppController {
     return listTasks(this.workspace, selected);
   }
   storagePaths() {
-    return { workspace: this.workspace, home: xloomHome(), project: projectDirectory(this.workspace), config: this.configPath,
+    return { workspace: this.workspace, home: xloomHome(), project: projectDirectory(this.workspace),
+      config: this.globalSettings ? globalConfigPath() : this.configPath, globalConfig: globalConfigPath(), projectConfig: this.configPath,
+      auth: path.join(xloomHome(), "auth.json"),
       task: this.store?.dataDir, chats: path.join(projectDirectory(this.workspace), "chats") };
   }
   openTask(id: string): void {
@@ -234,16 +243,24 @@ export class AppController {
     return this.settings.listModels(Object.values(this.config.models).filter((model): model is ModelConfig => Boolean(model)));
   }
   getProviders(mode: "login" | "logout" = "login") { return this.settings.listProviders(mode); }
-  private persistModels(models: ProjectConfig["models"]): void {
-    const config = projectConfigSchema.parse({ ...this.config, models });
-    saveConfig(this.configPath, config);
-    try { this.store?.updateModels(config.models); }
-    catch {
-      try { saveConfig(this.configPath, this.config); }
-      catch { throw new Error("模型配置已保存，但当前黑板同步失败且无法恢复配置。请退出并重启 xloom 后核对模型设置。"); }
-      throw new Error("模型设置未应用：当前黑板更新失败，配置已恢复。请检查本地存储后重试。");
-    }
-    this.config = config;
+  private persistModels(update: (models: ProjectConfig["models"]) => ProjectConfig["models"]): void {
+    // Serialize cross-workspace read/modify/write, including rollback. Read the
+    // latest global file so a stale session cannot overwrite other roles/limits.
+    const lock = this.globalSettings ? new FileLock(path.join(xloomHome(), "locks", "settings.lock")) : undefined;
+    try {
+      const previous = this.globalSettings ? withGlobalSettings(this.config) : this.config;
+      const config = projectConfigSchema.parse({ ...previous, models: update(structuredClone(previous.models)) });
+      const save = (value: ProjectConfig) => this.globalSettings ? saveGlobalSettings(value) : saveConfig(this.configPath, value);
+      save(config);
+      try { this.store?.updateModels(config.models); }
+      catch {
+        try { save(previous); }
+        catch { throw new Error("模型配置已保存，但当前黑板同步失败且无法恢复配置。请退出并重启 xloom 后核对模型设置。"); }
+        throw new Error("模型设置未应用：当前黑板更新失败，配置已恢复。请检查本地存储后重试。");
+      }
+      // Other hand-edited global settings take effect on restart, not mid-task.
+      this.config = { ...this.config, models: config.models };
+    } finally { lock?.close(); }
     this.chatSession.reset();
     this.chatUsage = { input: 0, output: 0, cost: 0 };
     this.refreshDisplayInfo(true);
@@ -254,18 +271,23 @@ export class AppController {
       const models = await this.getModels();
       signal.throwIfAborted();
       if (!models.some(item => item.provider === provider && item.model === model)) throw new Error("模型不在 Xloom 已接入目录中。请先使用 /login 接入对应供应商，再使用 /model 选择模型。");
-      const next = structuredClone(this.config.models);
-      // Keep this model's explicit endpoint/credential overrides; other choices
-      // use Pi defaults instead of inheriting another model's endpoint/limits.
-      const configured = Object.values(this.config.models).find(item => item?.provider === provider && item.model === model && (item.api || item.baseUrl || item.apiKeyEnv));
-      for (const target of role === "all" ? ["chat", "decide", "execute"] as const : [role]) next[target] = configured ? { ...configured } : { provider, model };
-      this.persistModels(next);
+      this.persistModels(next => {
+        // Preserve role effort, but never carry another model's endpoint/limits.
+        const configured = Object.values(next).find(item => item?.provider === provider && item.model === model && (item.api || item.baseUrl || item.apiKeyEnv));
+        const chatThinking = next.chat?.thinking ?? next.execute.thinking;
+        for (const target of role === "all" ? ["chat", "decide", "execute"] as const : [role]) {
+          const thinking = target === "chat" ? chatThinking : next[target].thinking;
+          next[target] = { ...(configured ?? { provider, model }), thinking: thinking ?? "max" };
+        }
+        return next;
+      });
     }, signal);
   }
   private useStoredCredential(provider: string): void {
-    const models = structuredClone(this.config.models);
-    for (const model of Object.values(models)) if (model?.provider === provider) delete model.apiKeyEnv;
-    this.persistModels(models);
+    this.persistModels(models => {
+      for (const model of Object.values(models)) if (model?.provider === provider) delete model.apiKeyEnv;
+      return models;
+    });
   }
   login(provider: string, interaction: AuthInteraction, type: AuthType = "oauth"): Promise<void> {
     return this.perform(this.mode, async signal => {

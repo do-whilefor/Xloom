@@ -5,13 +5,13 @@ import { existsSync, mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { CHAT_GOAL, defaultConfig, ensureGlobalSettings, loadConfig, saveNewConfig, workspaceDefaults } from "./config.js";
+import { CHAT_GOAL, defaultConfig, ensureGlobalSettings, loadConfig, loadRuntimeConfig, saveNewConfig, workspaceDefaults } from "./config.js";
 import { BlackboardStore } from "./store.js";
 import { LoopController } from "./controller.js";
 import { DemoRunner } from "./demo.js";
 import { renderReport } from "./report.js";
 import { currentTaskId, listTasks, readSavedBoard, selectTask, taskDirectory, WorkspaceLock } from "./workspace.js";
-import { ensureProject, projectConfigPath, projectDirectory, xloomHome } from "./paths.js";
+import { ensureProject, globalConfigPath, projectConfigPath, projectDirectory, xloomHome } from "./paths.js";
 import { migrateWorkspace } from "./migration.js";
 
 const help = `xloom — local two-agent research loop (Windows MVP)
@@ -28,7 +28,8 @@ const help = `xloom — local two-agent research loop (Windows MVP)
   xloom migrate [--pi-dir PATH]  Import legacy workspace data / model settings; retain originals
   xloom demo [--headless]     Offline synthetic fixture in a new temporary workspace
 
-Options: --workspace PATH  --config PATH  --help
+Options: --workspace PATH  --config PATH (independent settings override)  --help
+Global models/thinking/limits: ~/.xloom/settings.json; credentials: ~/.xloom/auth.json
 TUI: plain text chats; /run GOAL starts a separate two-agent task
      /model /login /logout /new /tasks /open TASK_ID /paths /start /pause /stop /hint /meta /board /help /exit
      Ctrl+O toggles details; click an activity summary to expand and its content to collapse
@@ -61,19 +62,23 @@ async function main(): Promise<void> {
   if (demo && (values.workspace || values.config)) throw new Error("Demo always uses a new temporary workspace; omit --workspace and --config.");
   const workspace = demo ? mkdtempSync(path.join(tmpdir(), "xloom-demo-")) : realpathSync(path.resolve(values.workspace ?? process.cwd()));
   const configPath = values.config ? path.resolve(workspace, values.config) : projectConfigPath(workspace);
+  const useGlobalSettings = !values.config && !demo;
   if (command === "chrome") {
     const action = positionals[1] ?? "status";
     if (action !== "status" && action !== "disconnect" && action !== "connect") throw new Error("Use chrome [status|disconnect|connect].");
     const { controlChrome } = await import("./runtime/chrome-daemon.js");
     const result = await controlChrome({ workspace, artifactsDirectory: projectDirectory(workspace),
-      config: existsSync(configPath) ? loadConfig(configPath).chrome : undefined }, action);
+      config: existsSync(configPath) ? loadRuntimeConfig(configPath, useGlobalSettings).chrome
+        : useGlobalSettings ? workspaceDefaults(CHAT_GOAL).chrome : undefined }, action);
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
     return;
   }
   if (command === "tasks") { process.stdout.write(`${JSON.stringify(listTasks(workspace), null, 2)}\n`); return; }
   if (command === "paths") {
     const taskId = currentTaskId(workspace);
-    process.stdout.write(`${JSON.stringify({ workspace, home: xloomHome(), project: projectDirectory(workspace), config: configPath,
+    process.stdout.write(`${JSON.stringify({ workspace, home: xloomHome(), project: projectDirectory(workspace),
+      config: useGlobalSettings ? globalConfigPath() : configPath, globalConfig: globalConfigPath(), projectConfig: configPath,
+      auth: path.join(xloomHome(), "auth.json"),
       task: taskId || existsSync(path.join(projectDirectory(workspace), "blackboard.sqlite")) ? taskDirectory(workspace, taskId) : undefined,
       chats: path.join(projectDirectory(workspace), "chats") }, null, 2)}\n`);
     return;
@@ -86,16 +91,16 @@ async function main(): Promise<void> {
       const { importPiSettings } = await import("./runtime/storage.js");
       importPiSettings(realpathSync(path.resolve(values["pi-dir"])));
     }
-    if (existsSync(configPath)) ensureGlobalSettings(loadConfig(configPath));
+    if (useGlobalSettings && existsSync(configPath)) ensureGlobalSettings(loadConfig(configPath));
     process.stdout.write(`Data: ${projectDirectory(workspace)}\nOriginal files retained; existing imported data is never overwritten.\n`);
     return;
   }
   if (command === "init") {
     if (!values.goal?.trim()) throw new Error("init requires --goal. Your input defines the authorized task and targets.");
     ensureProject(workspace);
-    const config = workspaceDefaults(values.goal!, values.scope);
+    const config = useGlobalSettings ? workspaceDefaults(values.goal!, values.scope) : defaultConfig(values.goal!, values.scope);
     saveNewConfig(configPath, config);
-    ensureGlobalSettings(config);
+    if (useGlobalSettings) ensureGlobalSettings(config);
     process.stdout.write(`Created ${configPath}\nStart xloom, configure a provider with /login, then choose its model with /model. Goal completion, not a Step count, ends the loop.\n`);
     return;
   }
@@ -108,8 +113,8 @@ async function main(): Promise<void> {
     const shell = spawnSync("pwsh.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "$PSVersionTable.PSVersion.ToString()"], { encoding: "utf8", windowsHide: true, timeout: 10000 });
     process.stdout.write(`Node ${process.version}; platform ${process.platform}\nPowerShell 7: ${shell.status === 0 ? shell.stdout.trim() : "not found on PATH"}\n`);
     if (process.platform !== "win32" || shell.status !== 0) throw new Error("This MVP expects Windows and PowerShell 7 (pwsh.exe) on PATH.");
-    if (existsSync(configPath)) {
-      const config = loadConfig(configPath);
+    if (existsSync(configPath) || useGlobalSettings && existsSync(globalConfigPath())) {
+      const config = existsSync(configPath) ? loadRuntimeConfig(configPath, useGlobalSettings) : workspaceDefaults(CHAT_GOAL);
       const { resolveModel } = await import("./runtime/index.js");
       for (const role of ["chat", "decide", "execute"] as const) {
         const resolved = await resolveModel(config.models[role] ?? config.models.execute, new AbortController().signal);
@@ -121,16 +126,15 @@ async function main(): Promise<void> {
   if (!values.headless && (!process.stdin.isTTY || !process.stdout.isTTY)) throw new Error("TUI needs an interactive terminal. Use --headless to run explicitly without a TUI.");
   if (!demo && !values.headless) {
     ensureProject(workspace);
-    if (!existsSync(configPath)) saveNewConfig(configPath, workspaceDefaults(CHAT_GOAL));
-    ensureGlobalSettings(loadConfig(configPath));
+    if (!existsSync(configPath)) saveNewConfig(configPath, useGlobalSettings ? workspaceDefaults(CHAT_GOAL) : defaultConfig(CHAT_GOAL));
     const [{ AppController }, { startTui }] = await Promise.all([import("./app.js"), import("./ui/index.js")]);
-    const app = new AppController(workspace, configPath, loadConfig(configPath));
+    const app = new AppController(workspace, configPath, loadConfig(configPath), { globalSettings: useGlobalSettings });
     try { await startTui(app, workspace); } finally { await app.close(); }
     return;
   }
-  const config = demo ? defaultConfig("DEMO: validate only the offline synthetic protocol fixture", "Local synthetic fixture; no external target") : loadConfig(configPath);
+  const config = demo ? defaultConfig("DEMO: validate only the offline synthetic protocol fixture", "Local synthetic fixture; no external target") : loadRuntimeConfig(configPath, useGlobalSettings);
   if (demo) { ensureProject(workspace); config.title = "xloom DEMO (synthetic, no live test)"; saveNewConfig(configPath, config); process.stdout.write(`DEMO workspace: ${workspace}\n`); }
-  else ensureGlobalSettings(config);
+  else if (useGlobalSettings) ensureGlobalSettings(config);
   const runner = demo ? new DemoRunner() : new (await import("./runtime/index.js")).PiRunner();
   const sessionLock = new WorkspaceLock(workspace);
   let store: BlackboardStore;

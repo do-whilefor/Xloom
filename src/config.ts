@@ -3,7 +3,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { projectConfigSchema, formatValidationError } from "./schema.js";
 import type { ProjectConfig } from "./types.js";
-import { xloomHome } from "./paths.js";
+import { atomicJson, globalConfigPath } from "./paths.js";
 
 export const CHAT_GOAL = "普通聊天；使用 /run 目标启动独立红队任务";
 
@@ -24,15 +24,32 @@ export function defaultConfig(goal: string, scope = goal): ProjectConfig {
 const globalSettingsSchema = projectConfigSchema.pick({ version: true, models: true, limits: true, chrome: true });
 
 export function workspaceDefaults(goal: string, scope = goal): ProjectConfig {
-  const file = path.join(xloomHome(), "settings.json");
-  if (!existsSync(file)) return defaultConfig(goal, scope);
+  return withGlobalSettings(defaultConfig(goal, scope));
+}
+
+/** Global runtime settings override legacy project copies, never task scope/context. */
+export function withGlobalSettings(config: ProjectConfig): ProjectConfig {
+  const file = globalConfigPath();
+  if (!existsSync(file)) return projectConfigSchema.parse(config);
   const settings = globalSettingsSchema.safeParse(readConfigJson(file));
   if (!settings.success) throw new Error(`Invalid Xloom global settings: ${file}`);
-  return projectConfigSchema.parse({ ...defaultConfig(goal, scope), ...settings.data, goal, scope });
+  return projectConfigSchema.parse({ ...config, ...settings.data, chrome: settings.data.chrome });
+}
+
+export function loadRuntimeConfig(file: string, global = true): ProjectConfig {
+  const config = loadConfig(file);
+  return global ? withGlobalSettings(config) : config;
+}
+
+export function saveGlobalSettings(config: ProjectConfig): void {
+  const parsed = projectConfigSchema.safeParse(config);
+  if (!parsed.success) throw new Error(`Invalid Xloom settings: ${formatValidationError(parsed.error)}`);
+  const { version, models, limits, chrome } = parsed.data;
+  atomicJson(globalConfigPath(), { version, models, limits, chrome });
 }
 
 export function ensureGlobalSettings(config: ProjectConfig): void {
-  const file = path.join(xloomHome(), "settings.json");
+  const file = globalConfigPath();
   if (existsSync(file)) return;
   mkdirSync(path.dirname(file), { recursive: true });
   const { version, models, limits, chrome } = config;
