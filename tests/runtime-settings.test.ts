@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -158,9 +158,11 @@ describe("Pi settings service", () => {
 
   it("lists only interactive auth methods; subscription login is oauth", async () => {
     const providers = await service.listProviders();
-    expect(providers).toContainEqual({ id: "opencode-go", name: "OpenCode Go", authTypes: ["api_key"] });
+    expect(providers).toContainEqual({ id: "opencode-go", name: "OpenCode Go", authTypes: ["api_key"], stored: false });
     expect(providers.find((provider) => provider.id === "anthropic")?.authTypes).toEqual(["api_key", "oauth"]);
-    expect(providers.every((provider) => Object.keys(provider).sort().join() === "authTypes,id,name")).toBe(true);
+    expect(providers.find(provider => provider.id === "openai-codex")?.authTypes).toEqual(["oauth"]);
+    expect(providers.find(provider => provider.id === "kimi-coding")?.authTypes).toEqual(["api_key", "oauth"]);
+    expect(providers.every((provider) => Object.keys(provider).sort().join() === "authTypes,id,name,stored")).toBe(true);
   });
 
   it("persists API keys through real Pi login while retaining other provider credentials", async () => {
@@ -185,6 +187,57 @@ describe("Pi settings service", () => {
     expect((await readAuth())["opencode-go"].key).toBe("new-test-key");
   });
 
+  it.each(["apikey", "login"])("replaces the old key without backups and reuses the new key in existing and fresh runtimes through /%s", async command => {
+    vi.stubEnv("OPENCODE_API_KEY", "OLD_AMBIENT_KEY");
+    await writeFile(join(directory, "auth.json"), JSON.stringify({ anthropic: unrelated,
+      "opencode-go": { type: "api_key", key: "OLD_PERSISTED_KEY" } }));
+    const existing = await createRuntime();
+    expect((await existing.getAuth("opencode-go"))?.auth.apiKey).toBe("OLD_PERSISTED_KEY");
+    if (command === "apikey") await service.saveApiKey("opencode-go", "NEW_PERSISTED_KEY");
+    else await service.login("opencode-go", { ...interaction(), prompt: async () => "NEW_PERSISTED_KEY" }, "api_key");
+    expect(await readAuth()).toEqual({ anthropic: unrelated, "opencode-go": { type: "api_key", key: "NEW_PERSISTED_KEY" } });
+    expect(await readdir(directory)).toEqual(["auth.json"]);
+    expect((await existing.getAuth("opencode-go"))?.auth.apiKey).toBe("NEW_PERSISTED_KEY");
+    expect((await (await createRuntime()).getAuth("opencode-go"))?.auth.apiKey).toBe("NEW_PERSISTED_KEY");
+    expect((await service.listProviders()).find(provider => provider.id === "opencode-go")?.stored).toBe(true);
+  });
+
+  it.each(["anthropic", "kimi-coding"])("discards an old OAuth credential when %s is switched to an API key", async provider => {
+    await writeFile(join(directory, "auth.json"), JSON.stringify({ [provider]: unrelated }));
+    await service.login(provider, { ...interaction(), prompt: async () => "new-key" }, "api_key");
+    expect(await readAuth()).toEqual({ [provider]: { type: "api_key", key: "new-key" } });
+    expect(await readdir(directory)).toEqual(["auth.json"]);
+  });
+
+  it("supports provider-owned API-key options while treating pasted key expressions as literals", async () => {
+    const key = "!literal-${NOT_A_REAL_TOKEN_ENV}";
+    const prompt = vi.fn(async (prompt: { type: string }) => prompt.type === "select" ? "bearer-token" : key);
+    await service.login("amazon-bedrock", { ...interaction(), prompt }, "api_key");
+    expect(prompt.mock.calls.map(([prompt]) => prompt.type)).toEqual(["select", "secret"]);
+    expect((await (await createRuntime()).getAuth("amazon-bedrock"))?.auth.apiKey).toBe(key);
+  });
+
+  it.each(["cancelled", "invalid"])("retains the old key when replacement is %s before persistence", async outcome => {
+    await service.saveApiKey("opencode-go", "old-retained-key");
+    const control = new AbortController();
+    await expect(service.login("opencode-go", { ...interaction(), signal: control.signal, prompt: async () => {
+      if (outcome === "cancelled") control.abort();
+      return "invalid\nkey";
+    } }, "api_key")).rejects.toThrow();
+    expect((await readAuth())["opencode-go"]).toEqual({ type: "api_key", key: "old-retained-key" });
+  });
+
+  it.each(["openai-codex", "kimi-coding"])("stores a %s account login and makes its models selectable", async provider => {
+    configure = runtime => {
+      vi.spyOn(runtime.getProvider(provider)!.auth.oauth!, "login").mockResolvedValue(unrelated as Extract<Credential, { type: "oauth" }>);
+    };
+    await service.login(provider, interaction());
+    expect((await readAuth())[provider]).toEqual(unrelated);
+    expect((await service.listModels()).some(model => model.provider === provider)).toBe(true);
+    await service.logout(provider);
+    expect((await readAuth())[provider]).toBeUndefined();
+  });
+
   it("uses the actual provider OAuth flow and delegates all callbacks", async () => {
     const callbacks = interaction();
     configure = (runtime) => {
@@ -202,7 +255,7 @@ describe("Pi settings service", () => {
   it("does not call API-key login as a substitute for browser login", async () => {
     let login!: ReturnType<typeof vi.spyOn>;
     configure = (runtime) => { login = vi.spyOn(runtime, "login"); };
-    await expect(service.login("opencode-go", interaction())).rejects.toThrow("This Xloom provider does not support the requested authentication method; use /apikey to configure a supported provider.");
+    await expect(service.login("opencode-go", interaction())).rejects.toThrow("This Xloom provider does not support the requested authentication method; use /login to select a supported method.");
     expect(login).not.toHaveBeenCalled();
   });
 
@@ -233,7 +286,7 @@ describe("Pi settings service", () => {
   });
 
   it("does not echo arbitrary provider names for unsupported credential setup", async () => {
-    await expect(service.saveApiKey("fake-secret-provider-id", "test-key")).rejects.toThrow("This Xloom provider does not support API-key setup; use /apikey to select a supported provider.");
+    await expect(service.saveApiKey("fake-secret-provider-id", "test-key")).rejects.toThrow("This Xloom provider does not support API-key setup; use /login to select a supported authentication method.");
     await expect(service.login("fake-secret-provider-id", interaction())).rejects.not.toThrow("fake-secret-provider-id");
   });
 

@@ -1,4 +1,4 @@
-import type { AuthInteraction } from "@earendil-works/pi-ai";
+import type { AuthInteraction, AuthType } from "@earendil-works/pi-ai";
 import { CredentialSynchronizationError, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { ModelConfig } from "../types.js";
 import { modelRuntimePaths } from "./storage.js";
@@ -9,7 +9,7 @@ export type SettingsRuntime = Pick<ModelRuntime, "getError" | "getAvailableSnaps
 export type SettingsRuntimeFactory = (signal?: AbortSignal) => Promise<SettingsRuntime>;
 
 export interface ModelChoice { provider: string; model: string; name: string }
-export interface ProviderChoice { id: string; name: string; authTypes: string[] }
+export interface ProviderChoice { id: string; name: string; authTypes: string[]; stored?: boolean }
 export interface ModelDisplayInfo { contextWindow?: number; authLabel?: string }
 
 const createRuntime: SettingsRuntimeFactory = (signal) => ModelRuntime.create({ ...modelRuntimePaths(), allowModelNetwork: false, signal });
@@ -89,6 +89,7 @@ export class SettingsService {
       return runtime.getProviders().map(({ id, name, auth }) => ({
         id, name, authTypes: [auth.apiKey?.login ? "api_key" : undefined, auth.oauth?.login ? "oauth" : undefined]
           .filter((type): type is string => type !== undefined),
+        stored: runtime.getProviderAuthStatus(id).source === "stored",
       })).sort((a, b) => a.id.localeCompare(b.id));
     } catch {
       throw new Error("Xloom provider catalog could not be read.");
@@ -103,7 +104,7 @@ export class SettingsService {
     let supported: boolean;
     try { supported = Boolean(runtime.getProvider(provider)?.auth.apiKey?.login); }
     catch { throw new Error("Xloom provider configuration could not be read."); }
-    if (!supported) throw new Error("This Xloom provider does not support API-key setup; use /apikey to select a supported provider.");
+    if (!supported) throw new Error("This Xloom provider does not support API-key setup; use /login to select a supported authentication method.");
     let supplied = false;
     let needsMoreInput = false;
     try {
@@ -126,7 +127,7 @@ export class SettingsService {
       });
     } catch (error) {
       checkCancellation(signal);
-      if (needsMoreInput) throw new Error("This Xloom provider requires additional setup beyond an API key; check its local provider configuration or use /apikey to select another provider.");
+      if (needsMoreInput) throw new Error("This Xloom provider requires additional setup beyond an API key; use /login to complete its provider setup.");
       if (error instanceof CredentialSynchronizationError) {
         throw new Error("The credential was saved, but Xloom could not refresh its local state; restart Xloom and check /model.");
       }
@@ -134,21 +135,36 @@ export class SettingsService {
     }
   }
 
-  async login(provider: string, interaction: AuthInteraction): Promise<void> {
+  async login(provider: string, interaction: AuthInteraction, type: AuthType = "oauth"): Promise<void> {
     const runtime = await this.runtime(interaction.signal);
     let supported: boolean;
-    try { supported = Boolean(runtime.getProvider(provider)?.auth.oauth?.login); }
-    catch { throw new Error("Xloom provider configuration could not be read."); }
-    if (!supported) throw new Error("This Xloom provider does not support the requested authentication method; use /apikey to configure a supported provider.");
     try {
-      // Subscription auth is Pi OAuth too. Callbacks remain owned by the TUI.
-      await runtime.login(provider, "oauth", interaction);
+      const auth = runtime.getProvider(provider)?.auth;
+      supported = Boolean((type === "oauth" ? auth?.oauth : auth?.apiKey)?.login);
+    }
+    catch { throw new Error("Xloom provider configuration could not be read."); }
+    if (!supported) throw new Error("This Xloom provider does not support the requested authentication method; use /login to select a supported method.");
+    try {
+      // Pi owns the full provider flow and replaces the provider's one stored credential.
+      await runtime.login(provider, type, type === "oauth" ? interaction : {
+        ...interaction,
+        prompt: async prompt => {
+          const value = await interaction.prompt(prompt);
+          checkCancellation(interaction.signal);
+          checkCancellation(prompt.signal);
+          if (prompt.type === "secret") {
+            if (!value.trim() || /[\r\n\u0000]/u.test(value)) throw new Error("Enter a non-empty, single-line API key.");
+            return literalKey(value.trim());
+          }
+          return value;
+        },
+      });
     } catch (error) {
       checkCancellation(interaction.signal);
       if (error instanceof CredentialSynchronizationError) {
         throw new Error("Credentials were saved, but Xloom could not refresh its local state; restart Xloom and check /model.");
       }
-      throw new Error("Xloom authentication did not complete; use /apikey to configure a supported provider.");
+      throw new Error("Xloom authentication did not complete; retry /login with the provider's supported method.");
     }
   }
 

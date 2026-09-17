@@ -1,6 +1,6 @@
 import { stripTerminalSequences, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { AgentHandoff, BoardSnapshot, LoopEvent, Mode, RuntimeEvent, Usage } from "../types.js";
-import type { AuthInteraction } from "@earendil-works/pi-ai";
+import type { AuthInteraction, AuthType } from "@earendil-works/pi-ai";
 import { retainToolOutput } from "./tool-output.js";
 import type { TaskInfo } from "../workspace.js";
 import { cvssIssues } from "../scoring/cvss.js";
@@ -33,10 +33,10 @@ export interface UiController {
   chromeControl?(action: "status" | "disconnect" | "connect"): Promise<object>;
   getSessionInfo?(): SessionInfo;
   getModels?(): Promise<{ provider: string; model: string; name: string }[]>;
-  getProviders?(): Promise<{ id: string; name: string; authTypes: string[] }[]>;
+  getProviders?(): Promise<{ id: string; name: string; authTypes: string[]; stored?: boolean }[]>;
   selectModel?(provider: string, model: string, role?: ModelRole, signal?: AbortSignal): Promise<void>;
   saveApiKey?(provider: string, key: string, signal?: AbortSignal): Promise<void>;
-  login?(provider: string, interaction: AuthInteraction): Promise<void>;
+  login?(provider: string, interaction: AuthInteraction, type?: AuthType): Promise<void>;
   logout?(provider: string, signal?: AbortSignal): Promise<void>;
 }
 
@@ -50,6 +50,7 @@ export const HELP = [
   "/help  帮助    /exit  退出",
   "/model [all|chat|decide|execute]  搜索切换模型；默认应用所有角色",
   "/apikey [provider]  私密输入 API Key",
+  "/login [provider]  选择账号登录或 API Key    /logout [provider]  移除本地凭据",
   "普通聊天与黑板隔离；补充任务信息请显式使用 /hint。设置期间 Esc 取消。",
   "Enter 提交 · Alt+Enter / Shift+Enter 换行 · ↑/↓ 上一条 / 下一条输入（保留草稿）",
   "输入 / 显示命令候选；↑/↓ 选择，Tab / Enter 补全，再按 Enter 执行；Esc 关闭候选",
@@ -368,7 +369,7 @@ export interface CommandActions {
 
 /** Credential commands and accidental inline credentials never enter editor history. */
 export function recordCommandHistory(input: string): boolean {
-  return !/^\/(?:apikey|login)\b/i.test(input.trim());
+  return !/^\/(?:apikey|login|logout)\b/i.test(input.trim());
 }
 
 /** Synchronous dispatch keeps input responsive while the loop runs. */
@@ -382,7 +383,7 @@ export function dispatchCommand(input: string, controller: UiController, actions
   }
   const [command, ...rest] = value.split(/\s+/);
   const argument = value.slice(command!.length).trim();
-  if (rest.length && !["/hint", "/run", "/model", "/apikey", "/open", "/chrome"].includes(command!)) {
+  if (rest.length && !["/hint", "/run", "/model", "/apikey", "/login", "/logout", "/open", "/chrome"].includes(command!)) {
     actions.print("xloom", `命令 ${command} 不接受参数。`);
     return;
   }
@@ -408,7 +409,9 @@ export function dispatchCommand(input: string, controller: UiController, actions
       else actions.print("xloom", "当前模式不支持模型设置。");
       break;
     case "/apikey":
-      if (rest.length > 1) actions.print("xloom", "只填写 provider；API Key 请在私密输入框中输入，不要放在命令里。");
+    case "/login":
+    case "/logout":
+      if (rest.length > 1) actions.print("xloom", "只填写 provider；凭据请在私密输入框中输入，不要放在命令里。");
       else if (actions.settings) actions.settings(command.slice(1) as SettingsCommand, argument);
       else actions.print("xloom", "当前模式不支持凭据设置。");
       break;

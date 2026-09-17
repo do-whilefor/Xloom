@@ -62,17 +62,17 @@ describe("command-only autocomplete", () => {
     expect(await query("/unknown")).toBeNull();
   });
 
-  it.each(["/login", "/logout", "/details", "/quit"])("does not suggest or accept removed command %s", async command => {
+  it.each(["/details", "/quit"])("does not suggest or accept removed command %s", async command => {
     expect(await query(command)).toBeNull();
     expect((await query("/"))?.items.some(item => item.value === command)).toBe(false);
     expect(provider.applyCompletion(["/"], 0, 1, { value: command, label: command }, "/").lines).toEqual(["/"]);
   });
 
   it("completes required and optional arguments with a space, but not no-argument commands", async () => {
-    for (const name of ["/run", "/hint", "/model", "/apikey", "/chrome", "/help", "/exit"]) {
+    for (const name of ["/run", "/hint", "/model", "/apikey", "/login", "/logout", "/chrome", "/help", "/exit"]) {
       const suggestions = (await query(name))!;
       const result = provider.applyCompletion([name], 0, name.length, suggestions.items[0]!, name);
-      const hasArgument = ["/run", "/hint", "/model", "/apikey", "/chrome"].includes(name);
+      const hasArgument = ["/run", "/hint", "/model", "/apikey", "/login", "/logout", "/chrome"].includes(name);
       expect(result.lines).toEqual([name + (hasArgument ? " " : "")]);
       expect(result.cursorCol).toBe(result.lines[0]!.length);
     }

@@ -147,7 +147,9 @@ describe("command-line entry points", () => {
     expect(result.stdout).toContain("--headless");
     expect(result.stdout).toContain("Ctrl+O");
     expect(result.stdout).toContain("/exit");
-    expect(result.stdout).not.toMatch(/\/login|\/logout|\/details|\/quit/);
+    expect(result.stdout).toContain("/login");
+    expect(result.stdout).toContain("/logout");
+    expect(result.stdout).not.toMatch(/\/details|\/quit/);
     expect(existsSync(path.join(root, ".xloom"))).toBe(false);
     expect(existsSync(path.join(root, "xloom.json"))).toBe(false);
   });
@@ -156,8 +158,8 @@ describe("command-line entry points", () => {
     const root = workspace();
     const initialized = cli(["init", "--goal", "验证本地 fixture 对象权限"], root);
     expect(initialized.status).toBe(0);
-    expect(initialized.stdout).toContain("configure a provider with /apikey, then choose its model with /model");
-    expect(initialized.stdout).not.toMatch(/\bPi\b|login/);
+    expect(initialized.stdout).toContain("configure a provider with /login or /apikey, then choose its model with /model");
+    expect(initialized.stdout).not.toMatch(/\bPi\b/);
     const file = projectConfigPath(root);
     const config = loadConfig(file);
     expect(config.goal).toBe("验证本地 fixture 对象权限");

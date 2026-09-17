@@ -54,8 +54,8 @@ function launch(options: { now?: () => number; restoredReason?: string } = {}) {
       { provider: "opencode-go", model: "deepseek-v4-flash", name: "DeepSeek V4 Flash" },
     ]),
     getProviders: vi.fn(async () => [
-      { id: "anthropic", name: "Anthropic", authTypes: ["api_key", "oauth"] },
-      { id: "opencode-go", name: "OpenCode Go", authTypes: ["api_key"] },
+      { id: "anthropic", name: "Anthropic", authTypes: ["api_key", "oauth"], stored: true },
+      { id: "opencode-go", name: "OpenCode Go", authTypes: ["api_key"], stored: true },
     ]),
     selectModel: vi.fn(async (_provider: string, _model: string, _role?: string, _signal?: AbortSignal) => {}), saveApiKey: vi.fn(async (_provider: string, _key: string, _signal?: AbortSignal) => {}),
     login: vi.fn(async (_provider: string, _interaction: AuthInteraction) => {}), logout: vi.fn(async (_provider: string, _signal?: AbortSignal) => {}),
@@ -77,10 +77,14 @@ function launch(options: { now?: () => number; restoredReason?: string } = {}) {
   return { ...controls, board, info, controller, terminal, clipboard, submit, close, settled, session, listeners };
 }
 
-// Auth remains a supported Pi adapter. Test its dialog directly now that the
-// TUI no longer exposes login/logout slash commands.
+// Focused OAuth interaction tests use a single-method fixture; unified method
+// selection is exercised through the real slash entry point below.
 function launchAuthDialogs() {
   const app = launch();
+  app.controller.getProviders.mockResolvedValue([
+    { id: "anthropic", name: "Anthropic", authTypes: ["oauth"], stored: true },
+    { id: "opencode-go", name: "OpenCode Go", authTypes: ["api_key"], stored: true },
+  ]);
   const print = vi.fn();
   const dialogs = new SettingsDialogs(app.controller, app.tui, app.clipboard, print);
   const pending = new Set<Promise<void>>();
@@ -180,7 +184,7 @@ describe("ordinary chat and dual-agent task UI", () => {
       listener({ type: "runtime", runtime: { type: "thinking", mode: "chat", blockId: "removed", text: "REMOVED_COMMAND_THOUGHT" } });
       listener({ type: "runtime", runtime: { type: "thinking_end", mode: "chat", blockId: "removed", text: "" } });
     }
-    for (const command of ["/login", "/logout", "/login anthropic", "/logout anthropic", "/details", "/quit"]) app.submit(command);
+    for (const command of ["/details", "/quit"]) app.submit(command);
     await app.settled();
     app.tui.renderNow(true);
     expect(app.controller.getProviders).not.toHaveBeenCalled();
@@ -476,6 +480,68 @@ describe("Claude-style response timeline", () => {
 });
 
 describe("Pi-style model and credential dialogs", () => {
+  it.each(["oauth", "api_key"] as const)("selects %s through /login without exposing credentials in the feed or history", async type => {
+    const app = launch();
+    let supplied = "";
+    app.controller.login.mockImplementation(async (_provider, interaction) => {
+      supplied = await interaction.prompt({ type: type === "oauth" ? "manual_code" : "secret", message: "Private credential" });
+    });
+    app.submit("/board");
+    app.submit("/login");
+    await app.settled();
+    app.terminal.input("anthropic"); app.terminal.input("\r");
+    await app.settled();
+    app.terminal.input(type === "oauth" ? "账号" : "API Key"); app.terminal.input("\r");
+    await vi.waitFor(() => expect(app.controller.login).toHaveBeenCalledWith("anthropic", expect.any(Object), type));
+    app.terminal.input("PRIVATE_REPLACEMENT_CREDENTIAL");
+    app.tui.renderNow(true);
+    expect(app.terminal.output).not.toContain("PRIVATE_REPLACEMENT_CREDENTIAL");
+    app.terminal.input("\r");
+    await vi.waitFor(() => expect(app.tui.hasOverlay()).toBe(false));
+    expect(supplied).toBe("PRIVATE_REPLACEMENT_CREDENTIAL");
+    app.terminal.input("\x1b[A");
+    expect(app.editor.getExpandedText()).toBe("/board");
+    expect(app.controller.chat).not.toHaveBeenCalled();
+    expect(app.controller.saveApiKey).not.toHaveBeenCalled();
+  });
+
+  it("opens account-only Codex login directly without offering an API-key method", async () => {
+    const app = launch();
+    app.controller.getProviders.mockResolvedValue([{ id: "openai-codex", name: "OpenAI Codex", authTypes: ["oauth"], stored: false }]);
+    app.submit("/login openai-codex");
+    await vi.waitFor(() => expect(app.controller.login).toHaveBeenCalledWith("openai-codex", expect.any(Object), "oauth"));
+    expect(app.controller.saveApiKey).not.toHaveBeenCalled();
+  });
+
+  it("cancels the authentication-method choice without replacing credentials", async () => {
+    const app = launch();
+    app.submit("/login anthropic");
+    await app.settled();
+    app.terminal.input("\x1b");
+    await vi.waitFor(() => expect(app.tui.hasOverlay()).toBe(false));
+    expect(app.controller.login).not.toHaveBeenCalled();
+    expect(app.controller.saveApiKey).not.toHaveBeenCalled();
+  });
+
+  it("routes /logout to saved providers and waits for its removal confirmation", async () => {
+    const app = launch();
+    app.submit("/logout opencode-go");
+    await app.settled();
+    expect(app.controller.logout).not.toHaveBeenCalled();
+    app.terminal.input("\r");
+    await vi.waitFor(() => expect(app.controller.logout).toHaveBeenCalledWith("opencode-go", expect.any(AbortSignal)));
+  });
+
+  it("does not offer environment-only providers for local credential removal", async () => {
+    const app = launch();
+    app.controller.getProviders.mockResolvedValue([{ id: "opencode-go", name: "OpenCode Go", authTypes: ["api_key"], stored: false }]);
+    app.submit("/logout");
+    await vi.waitFor(() => expect(app.tui.hasOverlay()).toBe(false));
+    expect(app.controller.logout).not.toHaveBeenCalled();
+    app.tui.renderNow(true);
+    expect(plainText(app.terminal.output)).toContain("没有可移除的本地凭据");
+  });
+
   it("shows Xloom while loading provider settings", async () => {
     const app = launch();
     const providers = Promise.withResolvers<Awaited<ReturnType<typeof app.controller.getProviders>>>();
@@ -494,7 +560,7 @@ describe("Pi-style model and credential dialogs", () => {
     app.submit("/model");
     await vi.waitFor(() => expect(app.tui.hasOverlay()).toBe(false));
     app.tui.renderNow(true);
-    expect(plainText(app.terminal.output)).toContain("请先使用 /apikey");
+    expect(plainText(app.terminal.output)).toContain("请先使用 /login 登录或 /apikey");
     expect(app.controller.selectModel).not.toHaveBeenCalled();
   });
 
@@ -593,7 +659,7 @@ describe("Pi-style model and credential dialogs", () => {
     app.controller.selectModel.mockImplementation((_provider, _model, _role, value) => wait(value));
     app.controller.logout.mockImplementation((_provider, value) => wait(value));
     if (command === "logout") app.openAuth("logout", "anthropic");
-    else app.submit(command === "model" ? "/model" : "/apikey anthropic");
+    else app.submit(command === "model" ? "/model" : "/apikey opencode-go");
     await app.settled();
     if (command === "apikey") app.terminal.input("PRIVATE_KEY_IN_FLIGHT");
     app.terminal.input("\r");
@@ -694,13 +760,13 @@ describe("Pi-style model and credential dialogs", () => {
     expect(plainText(app.terminal.output)).not.toContain("Ctrl+L");
   });
 
-  it("filters auth providers to OAuth and rejects API-only providers", async () => {
+  it("accepts an API-only provider through the unified login dialog", async () => {
     const app = launchAuthDialogs();
     app.openAuth("login", "opencode-go");
     await vi.waitFor(() => expect(app.tui.hasOverlay()).toBe(false));
-    expect(app.controller.login).not.toHaveBeenCalled();
+    expect(app.controller.login).toHaveBeenCalledWith("opencode-go", expect.any(Object), "api_key");
     app.tui.renderNow(true);
-    expect(app.print).toHaveBeenCalledWith("xloom", expect.stringContaining("不支持此认证方式"), true);
+    expect(app.print).toHaveBeenCalledWith("xloom", expect.stringContaining("接入成功"));
   });
 
   it("allows an empty OAuth text prompt for the default GitHub Copilot domain", async () => {

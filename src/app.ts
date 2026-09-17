@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import path from "node:path";
-import type { AuthInteraction } from "@earendil-works/pi-ai";
+import type { AuthInteraction, AuthType } from "@earendil-works/pi-ai";
 import { CHAT_GOAL, saveConfig } from "./config.js";
 import { LoopController } from "./controller.js";
 import { BlackboardStore } from "./store.js";
@@ -253,7 +253,7 @@ export class AppController {
     return this.perform(this.mode, async signal => {
       const models = await this.getModels();
       signal.throwIfAborted();
-      if (!models.some(item => item.provider === provider && item.model === model)) throw new Error("模型不在 Xloom 已接入目录中。请先使用 /apikey 配置对应供应商，再使用 /model 选择模型。");
+      if (!models.some(item => item.provider === provider && item.model === model)) throw new Error("模型不在 Xloom 已接入目录中。请先使用 /login 登录或 /apikey 配置对应供应商，再使用 /model 选择模型。");
       const next = structuredClone(this.config.models);
       // Keep this model's explicit endpoint/credential overrides; other choices
       // use Pi defaults instead of inheriting another model's endpoint/limits.
@@ -270,10 +270,10 @@ export class AppController {
   saveApiKey(provider: string, key: string, externalSignal?: AbortSignal): Promise<void> {
     return this.perform(this.mode, async signal => { await this.settings.saveApiKey(provider, key, signal); signal.throwIfAborted(); this.useStoredCredential(provider); }, externalSignal);
   }
-  login(provider: string, interaction: AuthInteraction): Promise<void> {
+  login(provider: string, interaction: AuthInteraction, type: AuthType = "oauth"): Promise<void> {
     return this.perform(this.mode, async signal => {
       const combined = interaction.signal ? AbortSignal.any([signal, interaction.signal]) : signal;
-      await this.settings.login(provider, { ...interaction, signal: combined });
+      await this.settings.login(provider, { ...interaction, signal: combined }, type);
       combined.throwIfAborted();
       this.useStoredCredential(provider);
     });

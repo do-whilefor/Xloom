@@ -67,6 +67,12 @@ function requiresOpenCodeSession(model: Model<Api>): boolean {
   } catch { return false; }
 }
 
+function credentialSetup(runtime: ModelRuntime, provider: string): string {
+  return runtime.getProvider(provider)?.auth.oauth?.login
+    ? `use /login ${provider} to sign in or choose a supported authentication method`
+    : `use /apikey ${provider} to update the API key`;
+}
+
 function trackCredentials(runtime: ModelRuntime, secrets: string[]): void {
   const remember = (auth: AuthResult | undefined) => {
     const values = [auth?.auth.apiKey, ...Object.values(auth?.auth.headers ?? {}),
@@ -85,7 +91,7 @@ function trackCredentials(runtime: ModelRuntime, secrets: string[]): void {
     const provider = typeof providerOrModel === "string" ? providerOrModel : providerOrModel.provider;
     return remember(await piOperation(
       () => typeof providerOrModel === "string" ? original(providerOrModel, overrides) : original(providerOrModel, overrides),
-      overrides?.signal, `Xloom could not resolve credentials for ${provider}; use /apikey ${provider} to update the API key.`));
+      overrides?.signal, `Xloom could not resolve credentials for ${provider}; ${credentialSetup(runtime, provider)}.`));
   };
 }
 
@@ -131,7 +137,7 @@ export const resolveModel: ModelResolver = async (config, signal) => {
     checkConfiguration(runtime);
     registered = runtime.getModel(config.provider, config.model);
   }
-  if (!registered) throw new Error(`Unknown Xloom model ${config.provider}/${config.model}; use /model to select a model from a provider configured through /apikey.`);
+  if (!registered) throw new Error(`Unknown Xloom model ${config.provider}/${config.model}; configure a provider with /login or /apikey, then use /model to select a model.`);
 
   const secrets = explicitKey ? [explicitKey] : [];
   trackCredentials(runtime, secrets);
@@ -139,7 +145,7 @@ export const resolveModel: ModelResolver = async (config, signal) => {
     contextWindow: config.contextWindow ?? registered.contextWindow, maxTokens: config.maxTokens ?? registered.maxTokens };
   const auth = await runtime.getAuth(model, { apiKey: explicitKey, signal });
   signal.throwIfAborted();
-  if (!auth) throw new Error(`Xloom has no API key configured for ${config.provider}; use /apikey ${config.provider}, then /model to select a model.`);
+  if (!auth) throw new Error(`Xloom has no credentials configured for ${config.provider}; ${credentialSetup(runtime, config.provider)}, then /model to select a model.`);
   const builtin = builtinModels().getModel(config.provider, config.model);
   const costKnown = !config.baseUrl && (builtin?.baseUrl === model.baseUrl || (!builtin && Object.values(model.cost).some((value) => typeof value === "number" && value > 0)));
   const fallbackSessionId = randomUUID();

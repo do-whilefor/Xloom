@@ -491,6 +491,26 @@ describe("application model settings", () => {
     expect(loadConfig(test.configPath).models.execute.apiKeyEnv).toBeUndefined();
   });
 
+  it.each(["apikey", "login"] as const)("uses replacement credentials for every role on the next request through /%s", async command => {
+    const test = setup(); await test.app.close();
+    test.chat.reset.mockClear();
+    const selected = { provider: "fixture", model: "model-a", apiKeyEnv: "OLD_KEY_ENV" };
+    test.config.models = { chat: selected, decide: selected, execute: selected };
+    const app = new AppController(test.root, test.configPath, test.config, { settings: test.settings, chat: test.chat }); apps.push(app);
+    await app.chat("Before replacement");
+    if (command === "apikey") await app.saveApiKey("fixture", "replacement-key");
+    else {
+      await app.login("fixture", { prompt: async () => "replacement-key", notify() {} }, "api_key");
+      expect(test.settings.login).toHaveBeenCalledWith("fixture", expect.objectContaining({ signal: expect.any(AbortSignal) }), "api_key");
+    }
+    expect(test.chat.reset).toHaveBeenCalledOnce();
+    for (const model of Object.values(loadConfig(test.configPath).models)) expect(model?.apiKeyEnv).toBeUndefined();
+    await app.chat("After replacement");
+    expect(test.chatRequests.at(-1)?.model).toEqual({ provider: "fixture", model: "model-a" });
+    expect(readFileSync(test.configPath, "utf8")).not.toContain("replacement-key");
+    expect(JSON.stringify(test.events)).not.toContain("replacement-key");
+  });
+
   it("uses Pi model defaults without imposing a maxTokens override or inheriting another model's settings", async () => {
     const test = setup(); await test.app.close();
     test.config.models.execute = { provider: "fixture", model: "old-inline", api: "anthropic-messages", baseUrl: "https://fixture.invalid/v1", apiKeyEnv: "OLD_KEY_ENV", maxTokens: 8192, contextWindow: 64000 };

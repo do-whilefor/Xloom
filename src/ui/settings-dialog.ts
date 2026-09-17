@@ -1,7 +1,7 @@
 import chalk from "chalk";
 import { CURSOR_MARKER, Input, matchesKey, SelectList, truncateToWidth,
   type Component, type Focusable, type OverlayHandle, type SelectItem, type TuiAltScreen } from "@earendil-works/pi-tui";
-import type { AuthEvent, AuthInteraction, AuthPrompt } from "@earendil-works/pi-ai";
+import type { AuthEvent, AuthInteraction, AuthPrompt, AuthType } from "@earendil-works/pi-ai";
 import type { Clipboard } from "./clipboard.js";
 import { fitLines, plainText, type ModelRole, type SettingsCommand, type UiController } from "./model.js";
 
@@ -194,7 +194,7 @@ export class SettingsDialogs {
     if (this.panel) throw new Error("请先完成或取消当前设置。");
     if (this.controller.getSessionInfo?.().busy) throw new Error("模型正在运行，请先 /pause 再修改设置。");
     this.abort = new AbortController();
-    this.panel = new SettingsPanel(command === "model" ? "选择模型" : command === "apikey" ? "API Key" : command === "login" ? "订阅登录" : "移除本地凭据", () => this.tui.requestRender());
+    this.panel = new SettingsPanel(command === "model" ? "选择模型" : command === "apikey" ? "API Key" : command === "login" ? "登录与接入" : "移除本地凭据", () => this.tui.requestRender());
     this.panel.onCancel = () => this.cancel();
     this.panel.onPaste = () => this.paste();
     this.panel.setPrompt("正在读取 Xloom 配置…", undefined);
@@ -205,7 +205,7 @@ export class SettingsDialogs {
         const models = await this.controller.getModels();
         if (this.abort.signal.aborted) throw cancelled();
         const items = models.map(model => ({ value: `${model.provider}/${model.model}`, label: `${model.provider}/${model.model}`, description: model.name }));
-        if (!items.length) { this.print("xloom", "没有已接入的模型。请先使用 /apikey 配置供应商，再使用 /model 选择模型。", true); return; }
+        if (!items.length) { this.print("xloom", "没有已接入的模型。请先使用 /login 登录或 /apikey 配置供应商，再使用 /model 选择模型。", true); return; }
         const selected = await this.ask(`选择 ${argument || "all"} 模型（仅已接入供应商；输入名称搜索）`, { items });
         if (this.abort.signal.aborted) throw cancelled();
         const model = models[items.findIndex(item => item.value === selected)]!;
@@ -215,18 +215,19 @@ export class SettingsDialogs {
         if (!this.controller.getProviders) throw new Error("unsupported");
         const providers = await this.controller.getProviders();
         if (this.abort.signal.aborted) throw cancelled();
-        const eligible = command === "login" ? providers.filter(provider => provider.authTypes.includes("oauth"))
-          : command === "apikey" ? providers.filter(provider => provider.authTypes.includes("api_key")) : providers;
-        if (!eligible.length) { this.print("xloom", "没有支持此认证方式的提供方。", true); return; }
+        const eligible = command === "login" ? providers.filter(provider => provider.authTypes.some(type => type === "oauth" || type === "api_key"))
+          : command === "apikey" ? providers.filter(provider => provider.authTypes.includes("api_key")) : providers.filter(provider => provider.stored);
+        if (!eligible.length) { this.print("xloom", command === "logout" ? "没有可移除的本地凭据；环境变量和模型配置中的凭据不受影响。" : "没有支持此认证方式的提供方。", true); return; }
         let provider = argument;
-        if (!provider) provider = await this.ask("选择提供方（输入名称搜索）", { items: eligible.map(item => ({ value: item.id, label: item.name, description: item.id })) });
+        if (!provider) provider = await this.ask("选择提供方（输入名称搜索）", { items: eligible.map(item => ({ value: item.id, label: item.name,
+          description: `${item.id}${item.stored ? " · 已保存凭据" : ""}` })) });
         if (!eligible.some(item => item.id === provider)) { this.print("xloom", "提供方不存在或不支持此认证方式；请不带参数打开选择器。", true); return; }
         if (command === "apikey") {
           if (!this.controller.saveApiKey) throw new Error("unsupported");
           const key = await this.ask(`${provider} API Key（输入将遮蔽，不进入会话和历史）`, { secret: true });
           if (this.abort.signal.aborted) throw cancelled();
           await this.controller.saveApiKey(provider, key, this.abort.signal);
-          this.print("xloom", `${provider} 的 API Key 已保存。使用 /model 选择该供应商的模型；凭据不自动通用于其他供应商。`);
+          this.print("xloom", `${provider} 的 API Key 已保存并立即生效，旧凭据已替换且不另存。使用 /model 选择该供应商的模型。`);
         } else if (command === "logout") {
           if (!this.controller.logout) throw new Error("unsupported");
           await this.ask(`确认移除 ${provider} 的本地凭据？环境变量中的凭据不受影响。`, { items: [{ value: "yes", label: "确认移除本地凭据" }] });
@@ -235,6 +236,13 @@ export class SettingsDialogs {
           this.print("xloom", "已移除该提供方的本地凭据；环境变量中的凭据不受影响。");
         } else {
           if (!this.controller.login) throw new Error("unsupported");
+          const methods = eligible.find(item => item.id === provider)!.authTypes;
+          const choices = [
+            ...(methods.includes("oauth") ? [{ value: "oauth", label: "账号登录", description: "通过浏览器或设备码授权" }] : []),
+            ...(methods.includes("api_key") ? [{ value: "api_key", label: "API Key", description: "输入新凭据并替换该供应商的旧凭据" }] : []),
+          ];
+          const type = (choices.length === 1 ? choices[0]!.value : await this.ask(`${provider}：选择接入方式`, { items: choices })) as AuthType;
+          if (this.abort.signal.aborted) throw cancelled();
           const interaction: AuthInteraction = {
             signal: this.abort.signal,
             notify: event => { if (!this.abort?.signal.aborted) this.notify(event); },
@@ -242,8 +250,8 @@ export class SettingsDialogs {
               ? { items: prompt.options.map(item => ({ value: item.id, label: item.label, description: item.description })) }
               : prompt.type === "text" ? { allowEmpty: true } : { secret: true }, prompt.signal),
           };
-          await this.controller.login(provider, interaction);
-          if (!this.abort.signal.aborted) this.print("xloom", "认证成功；凭据已保存到本地 Xloom 凭据存储。");
+          await this.controller.login(provider, interaction, type);
+          if (!this.abort.signal.aborted) this.print("xloom", `${provider} 接入成功，后续请求使用新凭据；旧凭据已替换且不另存。使用 /model 选择模型。`);
         }
       }
     } catch {

@@ -450,21 +450,22 @@ describe("TUI command routing", () => {
     const resetChat = vi.fn();
     const app = { ...controller, runGoal: vi.fn(async () => {}), resetChat };
     const actions = { start: vi.fn(), quit: vi.fn(), print: vi.fn(), run: vi.fn(), settings: vi.fn() };
-    for (const command of ["/run https://localhost 对比账户", "/new", "/model", "/model decide", "/apikey", "/apikey opencode-go"]) dispatchCommand(command, app, actions);
+    for (const command of ["/run https://localhost 对比账户", "/new", "/model", "/model decide", "/apikey", "/apikey opencode-go", "/login", "/login openai-codex", "/logout", "/logout opencode-go"]) dispatchCommand(command, app, actions);
     expect(actions.run).toHaveBeenCalledWith("https://localhost 对比账户");
     expect(resetChat).toHaveBeenCalledOnce();
-    expect(actions.settings.mock.calls).toEqual([["model", ""], ["model", "decide"], ["apikey", ""], ["apikey", "opencode-go"]]);
+    expect(actions.settings.mock.calls).toEqual([["model", ""], ["model", "decide"], ["apikey", ""], ["apikey", "opencode-go"], ["login", ""], ["login", "openai-codex"], ["logout", ""], ["logout", "opencode-go"]]);
     expect(controller.hint).not.toHaveBeenCalled();
   });
 
   it("rejects inline secrets and invalid model roles without echoing or recording secrets", () => {
     const { controller } = fakeController();
     const actions = { start: vi.fn(), quit: vi.fn(), print: vi.fn(), settings: vi.fn() };
-    for (const command of ["/apikey anthropic PRIVATE_KEY", "/login anthropic PRIVATE_CODE", "/model invalid", "/run"]) dispatchCommand(command, controller, actions);
+    for (const command of ["/apikey anthropic PRIVATE_KEY", "/login anthropic PRIVATE_CODE", "/logout anthropic PRIVATE_KEY", "/model invalid", "/run"]) dispatchCommand(command, controller, actions);
     expect(actions.settings).not.toHaveBeenCalled();
     expect(JSON.stringify(actions.print.mock.calls)).not.toMatch(/PRIVATE_KEY|PRIVATE_CODE/);
     expect(recordCommandHistory("/apikey anthropic PRIVATE_KEY")).toBe(false);
     expect(recordCommandHistory(" /login anthropic")).toBe(false);
+    expect(recordCommandHistory("/logout anthropic PRIVATE_KEY")).toBe(false);
     expect(recordCommandHistory("/model decide")).toBe(true);
   });
 
@@ -480,7 +481,7 @@ describe("TUI command routing", () => {
     expect(actions.print.mock.calls.some(([label]) => label === "Blackboard")).toBe(true);
   });
 
-  it.each(["/login", "/logout", "/details", "/quit"])("rejects removed command %s without side effects", command => {
+  it.each(["/details", "/quit"])("rejects removed command %s without side effects", command => {
     const { controller } = fakeController();
     const actions = { start: vi.fn(), quit: vi.fn(), print: vi.fn(), settings: vi.fn(), chat: vi.fn() };
     dispatchCommand(command, controller, actions);

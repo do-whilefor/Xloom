@@ -225,7 +225,7 @@ describe("Pi model resolution", () => {
     vi.stubEnv("ANTHROPIC_API_KEY", "unused-environment-key");
     await saveAuth({ anthropic: { type: "oauth", access: "expired-access", refresh: "invalid-refresh", expires: 0 } });
     configureRuntime = (value) => vi.spyOn(value.getProvider("anthropic")!.auth.oauth!, "refresh").mockRejectedValue(new Error("refresh diagnostic with invalid-refresh"));
-    await expect(resolveModel(selection, signal())).rejects.toThrow("Xloom could not resolve credentials for anthropic; use /apikey anthropic to update the API key.");
+    await expect(resolveModel(selection, signal())).rejects.toThrow("Xloom could not resolve credentials for anthropic; use /login anthropic to sign in or choose a supported authentication method.");
   });
 
   it.each(getApiProviders().map((provider) => provider.api))("routes inline %s through Pi's registry", async (api) => {
@@ -311,10 +311,13 @@ describe("Pi model resolution", () => {
   it.each([
     selection,
     { provider: "opencode", model: "deepseek-v4-flash" },
-  ])("directs missing $provider credentials to Xloom /apikey without trying a model request", async config => {
+    { provider: "openai-codex", model: "gpt-5.4" },
+  ])("directs missing $provider credentials to its supported Xloom authentication method", async config => {
     vi.stubEnv("OPENCODE_API_KEY", undefined);
+    const guidance = config.provider === "opencode" ? `use /apikey ${config.provider} to update the API key`
+      : `use /login ${config.provider} to sign in or choose a supported authentication method`;
     await expect(resolveModel(config, signal())).rejects.toMatchObject({
-      message: `Xloom has no API key configured for ${config.provider}; use /apikey ${config.provider}, then /model to select a model.`,
+      message: `Xloom has no credentials configured for ${config.provider}; ${guidance}, then /model to select a model.`,
     });
   });
 
