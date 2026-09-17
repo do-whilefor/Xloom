@@ -197,7 +197,7 @@ export class SettingsDialogs {
     this.panel = new SettingsPanel(command === "model" ? "选择模型" : command === "apikey" ? "API Key" : command === "login" ? "订阅登录" : "移除本地凭据", () => this.tui.requestRender());
     this.panel.onCancel = () => this.cancel();
     this.panel.onPaste = () => this.paste();
-    this.panel.setPrompt("正在读取 Pi 配置…", undefined);
+    this.panel.setPrompt("正在读取 Xloom 配置…", undefined);
     this.overlay = this.tui.showOverlay(this.panel, { width: "85%", maxHeight: "90%", anchor: "center", margin: 1 });
     try {
       if (command === "model") {
@@ -243,7 +243,7 @@ export class SettingsDialogs {
               : prompt.type === "text" ? { allowEmpty: true } : { secret: true }, prompt.signal),
           };
           await this.controller.login(provider, interaction);
-          if (!this.abort.signal.aborted) this.print("xloom", "登录成功；凭据已保存到本地 Pi 凭据存储。");
+          if (!this.abort.signal.aborted) this.print("xloom", "认证成功；凭据已保存到本地 Xloom 凭据存储。");
         }
       }
     } catch {

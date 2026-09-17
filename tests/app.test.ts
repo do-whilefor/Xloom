@@ -420,7 +420,7 @@ describe("application model settings", () => {
 
   it("rejects unknown models without modifying configuration", async () => {
     const test = setup(); const before = readFileSync(test.configPath, "utf8");
-    await expect(test.app.selectModel("unknown", "missing")).rejects.toThrow(/Pi/);
+    await expect(test.app.selectModel("unknown", "missing")).rejects.toThrow(/Xloom/);
     expect(readFileSync(test.configPath, "utf8")).toBe(before);
   });
 

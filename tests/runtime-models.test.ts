@@ -225,7 +225,7 @@ describe("Pi model resolution", () => {
     vi.stubEnv("ANTHROPIC_API_KEY", "unused-environment-key");
     await saveAuth({ anthropic: { type: "oauth", access: "expired-access", refresh: "invalid-refresh", expires: 0 } });
     configureRuntime = (value) => vi.spyOn(value.getProvider("anthropic")!.auth.oauth!, "refresh").mockRejectedValue(new Error("refresh diagnostic with invalid-refresh"));
-    await expect(resolveModel(selection, signal())).rejects.toThrow("Pi could not resolve credentials for anthropic; check Pi login and provider configuration.");
+    await expect(resolveModel(selection, signal())).rejects.toThrow("Xloom could not resolve credentials for anthropic; use /apikey anthropic to update the API key.");
   });
 
   it.each(getApiProviders().map((provider) => provider.api))("routes inline %s through Pi's registry", async (api) => {
@@ -275,20 +275,20 @@ describe("Pi model resolution", () => {
 
   it("honors PI_OFFLINE when a model is missing", async () => {
     vi.stubEnv("PI_OFFLINE", "1");
-    await expect(resolveModel({ provider: "anthropic", model: "unknown" }, signal())).rejects.toThrow("Unknown Pi model");
+    await expect(resolveModel({ provider: "anthropic", model: "unknown" }, signal())).rejects.toThrow("Unknown Xloom model");
     expect(runtime.refresh).not.toHaveBeenCalled();
   });
 
   it("reports metadata refresh failures without leaking provider diagnostics", async () => {
     configureRuntime = (value) => vi.mocked(value.refresh).mockResolvedValue({ aborted: false, errors: new Map([["anthropic", new Error("metadata secret-value")]]) });
-    await expect(resolveModel({ provider: "anthropic", model: "unknown" }, signal())).rejects.toThrow("Pi could not refresh the model catalog for anthropic.");
+    await expect(resolveModel({ provider: "anthropic", model: "unknown" }, signal())).rejects.toThrow("Xloom could not refresh the model catalog for anthropic.");
   });
 
   it("sanitizes thrown catalog and initialization errors before a model is returned", async () => {
     configureRuntime = (value) => vi.mocked(value.refresh).mockRejectedValue(new Error("unsafe key literal"));
-    await expect(resolveModel({ provider: "anthropic", model: "unknown" }, signal())).rejects.toThrow("Pi could not refresh the model catalog for anthropic.");
+    await expect(resolveModel({ provider: "anthropic", model: "unknown" }, signal())).rejects.toThrow("Xloom could not refresh the model catalog for anthropic.");
     vi.mocked(ModelRuntime.create).mockRejectedValueOnce(new Error("unsafe configuration literal"));
-    await expect(listModels()).rejects.toThrow("Pi model runtime could not be initialized; check the Pi configuration.");
+    await expect(listModels()).rejects.toThrow("Xloom model runtime could not be initialized; check the local configuration.");
   });
 
   it("lists the same local built-in and custom registry without resolving auth", async () => {
@@ -304,21 +304,27 @@ describe("Pi model resolution", () => {
   it("fails early for missing explicit credentials and unknown providers", async () => {
     await expect(resolveModel({ provider: "test", model: "test", apiKeyEnv: "XLOOM_TEST_KEY" }, signal())).rejects.toThrow("Missing model credential");
     expect(ModelRuntime.create).not.toHaveBeenCalled();
-    await expect(resolveModel({ provider: "test", model: "test" }, signal())).rejects.toThrow("Unknown Pi model");
+    await expect(resolveModel({ provider: "test", model: "test" }, signal())).rejects.toThrow("Unknown Xloom model");
     expect(runtime.refresh).not.toHaveBeenCalled();
   });
 
-  it("reports missing provider credentials without trying a model request", async () => {
-    await expect(resolveModel(selection, signal())).rejects.toThrow("/apikey anthropic");
+  it.each([
+    selection,
+    { provider: "opencode", model: "deepseek-v4-flash" },
+  ])("directs missing $provider credentials to Xloom /apikey without trying a model request", async config => {
+    vi.stubEnv("OPENCODE_API_KEY", undefined);
+    await expect(resolveModel(config, signal())).rejects.toMatchObject({
+      message: `Xloom has no API key configured for ${config.provider}; use /apikey ${config.provider}, then /model to select a model.`,
+    });
   });
 
   it("does not silently fall back if models.json is invalid", async () => {
     await writeFile(join(directory, "models.json"), '{"secret-config-value":');
-    await expect(resolveModel(selection, signal())).rejects.toThrow("Pi model configuration could not be loaded");
+    await expect(resolveModel(selection, signal())).rejects.toThrow("Xloom model configuration could not be loaded");
   });
 
   it("rejects APIs not supported by the installed Pi runtime", async () => {
-    await expect(resolveModel({ provider: "local", model: "local", api: "not-an-api", baseUrl: "http://localhost/v1" }, signal())).rejects.toThrow("No Pi API provider registered");
+    await expect(resolveModel({ provider: "local", model: "local", api: "not-an-api", baseUrl: "http://localhost/v1" }, signal())).rejects.toThrow("No Xloom API provider registered");
     expect(ModelRuntime.create).not.toHaveBeenCalled();
   });
 

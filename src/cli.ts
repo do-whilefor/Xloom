@@ -21,11 +21,11 @@ const help = `xloom — local two-agent research loop (Windows MVP)
   xloom status               Read the saved board without running agents
   xloom report               Print a Markdown report with evidence references
   xloom doctor               Check local Node/PowerShell/config/model credentials
-  xloom models [--provider NAME]  List Pi's local built-in/cached/custom model catalog
+  xloom models [--provider NAME]  List Xloom's local built-in/cached/custom model catalog
   xloom paths                Show workspace, user data and configuration paths
   xloom tasks                List saved research tasks without running agents
   xloom chrome [status|disconnect|connect]  Manage the persistent Chrome connection
-  xloom migrate [--pi-dir PATH]  Import legacy workspace data / Pi settings; retain originals
+  xloom migrate [--pi-dir PATH]  Import legacy workspace data / model settings; retain originals
   xloom demo [--headless]     Offline synthetic fixture in a new temporary workspace
 
 Options: --workspace PATH  --config PATH  --help
@@ -96,7 +96,7 @@ async function main(): Promise<void> {
     const config = workspaceDefaults(values.goal!, values.scope);
     saveNewConfig(configPath, config);
     ensureGlobalSettings(config);
-    process.stdout.write(`Created ${configPath}\nChoose models via xloom models, configure context, and use Pi credentials or a model key environment variable. Goal completion, not a Step count, ends the loop.\n`);
+    process.stdout.write(`Created ${configPath}\nStart xloom, configure a provider with /apikey, then choose its model with /model. Goal completion, not a Step count, ends the loop.\n`);
     return;
   }
   if (command === "status" || command === "report") {
@@ -113,7 +113,7 @@ async function main(): Promise<void> {
       const { resolveModel } = await import("./runtime/index.js");
       for (const role of ["chat", "decide", "execute"] as const) {
         const resolved = await resolveModel(config.models[role] ?? config.models.execute, new AbortController().signal);
-        process.stdout.write(`${role}: ${resolved.model.provider}/${resolved.model.id}; Pi credential resolution OK (no model request)\n`);
+        process.stdout.write(`${role}: ${resolved.model.provider}/${resolved.model.id}; Xloom credential resolution OK (no model request)\n`);
       }
     } else process.stdout.write(`No workspace settings yet (${configPath}); use init --goal. No model request was made.\n`);
     return;

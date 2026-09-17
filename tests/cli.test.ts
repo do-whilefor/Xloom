@@ -156,6 +156,8 @@ describe("command-line entry points", () => {
     const root = workspace();
     const initialized = cli(["init", "--goal", "验证本地 fixture 对象权限"], root);
     expect(initialized.status).toBe(0);
+    expect(initialized.stdout).toContain("configure a provider with /apikey, then choose its model with /model");
+    expect(initialized.stdout).not.toMatch(/\bPi\b|login/);
     const file = projectConfigPath(root);
     const config = loadConfig(file);
     expect(config.goal).toBe("验证本地 fixture 对象权限");

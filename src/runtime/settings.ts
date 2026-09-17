@@ -38,7 +38,7 @@ export class SettingsService {
       return runtime;
     } catch {
       checkCancellation(signal);
-      throw new Error("Pi settings could not be loaded; check the local models.json and credential configuration.");
+      throw new Error("Xloom settings could not be loaded; check the local models.json and API-key configuration.");
     }
   }
 
@@ -61,7 +61,7 @@ export class SettingsService {
       return [...choices.values()]
         .sort((a, b) => a.provider.localeCompare(b.provider) || a.model.localeCompare(b.model));
     } catch {
-      throw new Error("Pi model catalog could not be read.");
+      throw new Error("Xloom model catalog could not be read.");
     }
   }
 
@@ -79,7 +79,7 @@ export class SettingsService {
       return { ...(Number.isSafeInteger(contextWindow) && contextWindow! > 0 ? { contextWindow } : {}), authLabel };
     } catch {
       checkCancellation(signal);
-      throw new Error("Pi model display metadata could not be read.");
+      throw new Error("Xloom model display metadata could not be read.");
     }
   }
 
@@ -91,7 +91,7 @@ export class SettingsService {
           .filter((type): type is string => type !== undefined),
       })).sort((a, b) => a.id.localeCompare(b.id));
     } catch {
-      throw new Error("Pi provider catalog could not be read.");
+      throw new Error("Xloom provider catalog could not be read.");
     }
   }
 
@@ -102,8 +102,8 @@ export class SettingsService {
     const runtime = await this.runtime(signal);
     let supported: boolean;
     try { supported = Boolean(runtime.getProvider(provider)?.auth.apiKey?.login); }
-    catch { throw new Error("Pi provider configuration could not be read."); }
-    if (!supported) throw new Error("This Pi provider does not support API-key setup; select another provider or use its Pi login flow.");
+    catch { throw new Error("Xloom provider configuration could not be read."); }
+    if (!supported) throw new Error("This Xloom provider does not support API-key setup; use /apikey to select a supported provider.");
     let supplied = false;
     let needsMoreInput = false;
     try {
@@ -126,11 +126,11 @@ export class SettingsService {
       });
     } catch (error) {
       checkCancellation(signal);
-      if (needsMoreInput) throw new Error("This provider requires additional setup; configure its credentials through Pi first.");
+      if (needsMoreInput) throw new Error("This Xloom provider requires additional setup beyond an API key; check its local provider configuration or use /apikey to select another provider.");
       if (error instanceof CredentialSynchronizationError) {
-        throw new Error("The credential was saved, but Pi could not refresh its local state; restart and check the provider configuration.");
+        throw new Error("The credential was saved, but Xloom could not refresh its local state; restart Xloom and check /model.");
       }
-      throw new Error("Pi could not save the API key; check the local credential storage and provider configuration.");
+      throw new Error("Xloom could not save the API key; check the local credential storage and retry /apikey.");
     }
   }
 
@@ -138,17 +138,17 @@ export class SettingsService {
     const runtime = await this.runtime(interaction.signal);
     let supported: boolean;
     try { supported = Boolean(runtime.getProvider(provider)?.auth.oauth?.login); }
-    catch { throw new Error("Pi provider configuration could not be read."); }
-    if (!supported) throw new Error("This Pi provider has no browser/subscription login; use API-key setup if available.");
+    catch { throw new Error("Xloom provider configuration could not be read."); }
+    if (!supported) throw new Error("This Xloom provider does not support the requested authentication method; use /apikey to configure a supported provider.");
     try {
       // Subscription auth is Pi OAuth too. Callbacks remain owned by the TUI.
       await runtime.login(provider, "oauth", interaction);
     } catch (error) {
       checkCancellation(interaction.signal);
       if (error instanceof CredentialSynchronizationError) {
-        throw new Error("Login credentials were saved, but Pi could not refresh its local state; restart and check the provider configuration.");
+        throw new Error("Credentials were saved, but Xloom could not refresh its local state; restart Xloom and check /model.");
       }
-      throw new Error("Pi login did not complete; retry the login flow or check the provider configuration.");
+      throw new Error("Xloom authentication did not complete; use /apikey to configure a supported provider.");
     }
   }
 
@@ -158,9 +158,9 @@ export class SettingsService {
     catch (error) {
       checkCancellation(signal);
       if (error instanceof CredentialSynchronizationError) {
-        throw new Error("Stored credentials were removed, but Pi could not refresh its local state; restart the application.");
+        throw new Error("Stored credentials were removed, but Xloom could not refresh its local state; restart Xloom.");
       }
-      throw new Error("Pi could not remove the stored credential; check the local credential storage.");
+      throw new Error("Xloom could not remove the stored credential; check the local credential storage.");
     }
   }
 }

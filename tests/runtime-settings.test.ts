@@ -202,7 +202,7 @@ describe("Pi settings service", () => {
   it("does not call API-key login as a substitute for browser login", async () => {
     let login!: ReturnType<typeof vi.spyOn>;
     configure = (runtime) => { login = vi.spyOn(runtime, "login"); };
-    await expect(service.login("opencode-go", interaction())).rejects.toThrow("no browser/subscription login");
+    await expect(service.login("opencode-go", interaction())).rejects.toThrow("This Xloom provider does not support the requested authentication method; use /apikey to configure a supported provider.");
     expect(login).not.toHaveBeenCalled();
   });
 
@@ -233,13 +233,13 @@ describe("Pi settings service", () => {
   });
 
   it("does not echo arbitrary provider names for unsupported credential setup", async () => {
-    await expect(service.saveApiKey("fake-secret-provider-id", "test-key")).rejects.toThrow("does not support API-key setup");
+    await expect(service.saveApiKey("fake-secret-provider-id", "test-key")).rejects.toThrow("This Xloom provider does not support API-key setup; use /apikey to select a supported provider.");
     await expect(service.login("fake-secret-provider-id", interaction())).rejects.not.toThrow("fake-secret-provider-id");
   });
 
   it("discards raw runtime errors and validation details", async () => {
     const failed = new SettingsService(async () => { throw new Error("secret-runtime-token"); });
-    await expect(failed.listModels()).rejects.toThrow("Pi settings could not be loaded");
+    await expect(failed.listModels()).rejects.toThrow("Xloom settings could not be loaded");
     await expect(failed.listProviders()).rejects.not.toThrow("secret-runtime-token");
     const invalid = new SettingsService(async () => ({ getError: () => "secret-config-token" } as SettingsRuntime));
     await expect(invalid.listModels()).rejects.not.toThrow("secret-config-token");
@@ -253,6 +253,8 @@ describe("Pi settings service", () => {
     for (const operation of [() => service.saveApiKey("opencode-go", "test-key"), () => service.login("anthropic", interaction()), () => service.logout("opencode-go")]) {
       const error = await operation().catch((value) => value as Error);
       expect(String(error)).not.toContain("secret-provider-response");
+      expect(String(error)).toContain("Xloom");
+      expect(String(error)).not.toMatch(/\bPi\b|login flow/);
       expect(error.cause).toBeUndefined();
     }
   });

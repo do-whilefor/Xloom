@@ -476,6 +476,18 @@ describe("Claude-style response timeline", () => {
 });
 
 describe("Pi-style model and credential dialogs", () => {
+  it("shows Xloom while loading provider settings", async () => {
+    const app = launch();
+    const providers = Promise.withResolvers<Awaited<ReturnType<typeof app.controller.getProviders>>>();
+    app.controller.getProviders.mockReturnValue(providers.promise);
+    app.submit("/apikey");
+    app.tui.renderNow(true);
+    expect(plainText(app.terminal.output)).toContain("正在读取 Xloom 配置");
+    expect(plainText(app.terminal.output)).not.toContain("Pi");
+    providers.resolve([]);
+    await vi.waitFor(() => expect(app.tui.hasOverlay()).toBe(false));
+  });
+
   it("directs users to /apikey when no authenticated models are available", async () => {
     const app = launch();
     app.controller.getModels.mockResolvedValue([]);

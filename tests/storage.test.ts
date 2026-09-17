@@ -214,6 +214,13 @@ describe("verified legacy data migration", () => {
 });
 
 describe("Xloom-owned Pi runtime storage", () => {
+  it("reports malformed imported credentials as a Xloom error without exposing their contents", () => {
+    vi.stubEnv("XLOOM_HOME", fixture()); const source = fixture();
+    writeFileSync(path.join(source, "auth.json"), '{"secret-value":');
+    expect(() => importPiSettings(source)).toThrow("Xloom could not import auth.json: invalid JSON. Original files were retained.");
+    expect(readFileSync(path.join(source, "auth.json"), "utf8")).toBe('{"secret-value":');
+  });
+
   it("imports once, preserves existing settings and never resurrects logged-out credentials", () => {
     vi.stubEnv("XLOOM_HOME", fixture()); const source = fixture();
     const original = '{"anthropic":{"type":"api_key","key":"fixture-secret"}}';

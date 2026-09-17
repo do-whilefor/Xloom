@@ -253,7 +253,7 @@ export class AppController {
     return this.perform(this.mode, async signal => {
       const models = await this.getModels();
       signal.throwIfAborted();
-      if (!models.some(item => item.provider === provider && item.model === model)) throw new Error("模型不在 Pi 已接入目录中。请先使用 /apikey 配置对应供应商，再使用 /model 选择模型。");
+      if (!models.some(item => item.provider === provider && item.model === model)) throw new Error("模型不在 Xloom 已接入目录中。请先使用 /apikey 配置对应供应商，再使用 /model 选择模型。");
       const next = structuredClone(this.config.models);
       // Keep this model's explicit endpoint/credential overrides; other choices
       // use Pi defaults instead of inheriting another model's endpoint/limits.

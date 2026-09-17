@@ -25,14 +25,14 @@ export function modelThinkingLevel(model: Model<Api>, requested: ModelConfig["th
 
 function checkConfiguration(runtime: ModelRuntime): void {
   // Pi's detailed validation errors can contain configured header/key literals.
-  if (runtime.getError()) throw new Error("Pi model configuration could not be loaded; check the Pi models.json and credential configuration.");
+  if (runtime.getError()) throw new Error("Xloom model configuration could not be loaded; check the local models.json and API-key configuration.");
 }
 
 async function createRuntime(signal?: AbortSignal): Promise<ModelRuntime> {
   signal?.throwIfAborted();
   // Pi owns auth.json, models.json, environment lookup, cached catalogs and OAuth refresh.
   const runtime = await piOperation(() => ModelRuntime.create({ ...modelRuntimePaths(), allowModelNetwork: false, signal }), signal,
-    "Pi model runtime could not be initialized; check the Pi configuration.");
+    "Xloom model runtime could not be initialized; check the local configuration.");
   signal?.throwIfAborted();
   checkConfiguration(runtime);
   return runtime;
@@ -85,23 +85,23 @@ function trackCredentials(runtime: ModelRuntime, secrets: string[]): void {
     const provider = typeof providerOrModel === "string" ? providerOrModel : providerOrModel.provider;
     return remember(await piOperation(
       () => typeof providerOrModel === "string" ? original(providerOrModel, overrides) : original(providerOrModel, overrides),
-      overrides?.signal, `Pi could not resolve credentials for ${provider}; check Pi login and provider configuration.`));
+      overrides?.signal, `Xloom could not resolve credentials for ${provider}; use /apikey ${provider} to update the API key.`));
   };
 }
 
 export const resolveModel: ModelResolver = async (config, signal) => {
   signal.throwIfAborted();
   const explicitKey = config.apiKeyEnv ? process.env[config.apiKeyEnv] : undefined;
-  if (config.apiKeyEnv && !explicitKey) throw new Error(`Missing model credential environment variable: ${config.apiKeyEnv}`);
+  if (config.apiKeyEnv && !explicitKey) throw new Error(`Xloom: Missing model credential environment variable: ${config.apiKeyEnv}; use /apikey ${config.provider} to save an API key.`);
   if (config.baseUrl) validateBaseUrl(config.baseUrl);
-  if (config.api && !getApiProvider(config.api)) throw new Error(`No Pi API provider registered for api: ${config.api}`);
+  if (config.api && !getApiProvider(config.api)) throw new Error(`No Xloom API provider registered for api: ${config.api}`);
   const runtime = await createRuntime(signal);
   let registered = runtime.getModel(config.provider, config.model);
 
   if (config.api || config.baseUrl) {
     const api = config.api ?? registered?.api;
     const baseUrl = config.baseUrl ?? registered?.baseUrl;
-    if (!api || !baseUrl) throw new Error("Custom models require api and baseUrl, or an existing Pi model supplying these defaults.");
+    if (!api || !baseUrl) throw new Error("Custom models require api and baseUrl, or an existing Xloom model supplying these defaults.");
     // Legacy inline settings are an in-memory Pi provider overlay, not another API implementation.
     await piOperation(() => runtime.registerProvider(config.provider, {
       api, baseUrl,
@@ -115,23 +115,23 @@ export const resolveModel: ModelResolver = async (config, signal) => {
         maxTokens: config.maxTokens ?? registered?.maxTokens ?? 16_384,
         cost: registered?.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       }],
-    }), signal, `Pi could not configure the inline provider ${config.provider}.`);
-    await piOperation(() => runtime.refresh({ allowNetwork: false, signal }), signal, `Pi could not refresh the inline provider ${config.provider}.`);
+    }), signal, `Xloom could not configure the inline provider ${config.provider}.`);
+    await piOperation(() => runtime.refresh({ allowNetwork: false, signal }), signal, `Xloom could not refresh the inline provider ${config.provider}.`);
     signal.throwIfAborted();
     checkConfiguration(runtime);
     registered = runtime.getModel(config.provider, config.model);
   } else if (!registered && runtime.getProvider(config.provider) && process.env.PI_OFFLINE === undefined) {
     // Dynamic Pi providers may have no static catalog. Only that known provider may discover models.
     if (explicitKey) await piOperation(() => runtime.setRuntimeApiKey(config.provider, explicitKey, { signal }), signal,
-      `Pi could not configure credentials for ${config.provider}.`);
+      `Xloom could not configure credentials for ${config.provider}; use /apikey ${config.provider} to update the API key.`);
     const result = await piOperation(() => runtime.refresh({ providers: [config.provider], allowNetwork: true, signal }), signal,
-      `Pi could not refresh the model catalog for ${config.provider}.`);
+      `Xloom could not refresh the model catalog for ${config.provider}.`);
     signal.throwIfAborted();
-    if (result.errors.has(config.provider)) throw new Error(`Pi could not refresh the model catalog for ${config.provider}.`);
+    if (result.errors.has(config.provider)) throw new Error(`Xloom could not refresh the model catalog for ${config.provider}.`);
     checkConfiguration(runtime);
     registered = runtime.getModel(config.provider, config.model);
   }
-  if (!registered) throw new Error(`Unknown Pi model ${config.provider}/${config.model}; configure it in Pi models.json or supply api and baseUrl.`);
+  if (!registered) throw new Error(`Unknown Xloom model ${config.provider}/${config.model}; use /model to select a model from a provider configured through /apikey.`);
 
   const secrets = explicitKey ? [explicitKey] : [];
   trackCredentials(runtime, secrets);
@@ -139,7 +139,7 @@ export const resolveModel: ModelResolver = async (config, signal) => {
     contextWindow: config.contextWindow ?? registered.contextWindow, maxTokens: config.maxTokens ?? registered.maxTokens };
   const auth = await runtime.getAuth(model, { apiKey: explicitKey, signal });
   signal.throwIfAborted();
-  if (!auth) throw new Error(`No Pi credentials configured for ${config.provider}; use /apikey ${config.provider} to configure this provider, then /model to select an available model. Credentials are provider-specific.`);
+  if (!auth) throw new Error(`Xloom has no API key configured for ${config.provider}; use /apikey ${config.provider}, then /model to select a model.`);
   const builtin = builtinModels().getModel(config.provider, config.model);
   const costKnown = !config.baseUrl && (builtin?.baseUrl === model.baseUrl || (!builtin && Object.values(model.cost).some((value) => typeof value === "number" && value > 0)));
   const fallbackSessionId = randomUUID();

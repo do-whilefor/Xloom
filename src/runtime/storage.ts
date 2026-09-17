@@ -18,7 +18,7 @@ export function importPiSettings(source = process.env.PI_CODING_AGENT_DIR || pat
       const original = path.join(source, name);
       if (!existsSync(original) || existsSync(destination)) continue;
       try { JSON.parse(readFileSync(original, "utf8")); }
-      catch { throw new Error(`Cannot import Pi ${name}: invalid JSON. Original files were retained.`); }
+      catch { throw new Error(`Xloom could not import ${name}: invalid JSON. Original files were retained.`); }
       mkdirSync(path.dirname(destination), { recursive: true });
       try { copyFileSync(original, destination, constants.COPYFILE_EXCL); copied.push(name); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
