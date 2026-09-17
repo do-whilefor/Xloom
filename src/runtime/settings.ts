@@ -5,11 +5,11 @@ import { modelRuntimePaths } from "./storage.js";
 
 export type { AuthEvent, AuthInteraction, AuthPrompt } from "@earendil-works/pi-ai";
 
-export type SettingsRuntime = Pick<ModelRuntime, "getError" | "getAvailableSnapshot" | "getModel" | "getProviders" | "getProvider" | "getProviderAuthStatus" | "isUsingOAuth" | "isUsingSubscription" | "login" | "logout">;
+export type SettingsRuntime = Pick<ModelRuntime, "getError" | "getAvailableSnapshot" | "getModel" | "getProviders" | "getProvider" | "getProviderAuthStatus" | "isUsingOAuth" | "isUsingSubscription" | "listCredentials" | "login" | "logout">;
 export type SettingsRuntimeFactory = (signal?: AbortSignal) => Promise<SettingsRuntime>;
 
 export interface ModelChoice { provider: string; model: string; name: string }
-export interface ProviderChoice { id: string; name: string; authTypes: string[]; stored?: boolean }
+export interface ProviderChoice { id: string; name: string; authTypes: string[]; stored?: boolean; oauthLabel?: string; ambientAuth?: string }
 export interface ModelDisplayInfo { contextWindow?: number; authLabel?: string }
 
 const createRuntime: SettingsRuntimeFactory = (signal) => ModelRuntime.create({ ...modelRuntimePaths(), allowModelNetwork: false, signal });
@@ -17,12 +17,6 @@ const createRuntime: SettingsRuntimeFactory = (signal) => ModelRuntime.create({ 
 function checkCancellation(signal?: AbortSignal): void {
   // Abort reasons may include provider responses or pasted credentials too.
   if (signal?.aborted) throw new DOMException("Credential operation cancelled.", "AbortError");
-}
-
-/** Pi auth.json supports commands and environment interpolation; pasted keys are always literals. */
-function literalKey(key: string): string {
-  const escaped = key.replaceAll("$", () => "$$");
-  return escaped.startsWith("!") ? `$!${escaped.slice(1)}` : escaped;
 }
 
 /** Local Pi catalog and provider-owned credential flows; no model or extension execution. */
@@ -83,55 +77,23 @@ export class SettingsService {
     }
   }
 
-  async listProviders(): Promise<ProviderChoice[]> {
+  async listProviders(mode: "login" | "logout" = "login"): Promise<ProviderChoice[]> {
     const runtime = await this.runtime();
     try {
+      if (mode === "logout") {
+        return (await runtime.listCredentials({ signal: AbortSignal.timeout(15_000) }))
+          .map(({ providerId, type }) => ({ id: providerId, name: runtime.getProvider(providerId)?.name ?? providerId, authTypes: [type], stored: true }))
+          .sort((a, b) => a.name.localeCompare(b.name));
+      }
       return runtime.getProviders().map(({ id, name, auth }) => ({
-        id, name, authTypes: [auth.apiKey?.login ? "api_key" : undefined, auth.oauth?.login ? "oauth" : undefined]
+        id, name, authTypes: [auth.apiKey ? "api_key" : undefined, auth.oauth ? "oauth" : undefined]
           .filter((type): type is string => type !== undefined),
         stored: runtime.getProviderAuthStatus(id).source === "stored",
-      })).sort((a, b) => a.id.localeCompare(b.id));
+        ...(auth.oauth?.loginLabel ? { oauthLabel: auth.oauth.loginLabel } : {}),
+        ...(auth.apiKey && !auth.apiKey.login ? { ambientAuth: auth.apiKey.name } : {}),
+      })).sort((a, b) => a.name.localeCompare(b.name));
     } catch {
       throw new Error("Xloom provider catalog could not be read.");
-    }
-  }
-
-  async saveApiKey(provider: string, key: string, signal?: AbortSignal): Promise<void> {
-    checkCancellation(signal);
-    const value = key.trim();
-    if (!value || /[\r\n\u0000]/u.test(value)) throw new Error("Enter a non-empty, single-line API key.");
-    const runtime = await this.runtime(signal);
-    let supported: boolean;
-    try { supported = Boolean(runtime.getProvider(provider)?.auth.apiKey?.login); }
-    catch { throw new Error("Xloom provider configuration could not be read."); }
-    if (!supported) throw new Error("This Xloom provider does not support API-key setup; use /login to select a supported authentication method.");
-    let supplied = false;
-    let needsMoreInput = false;
-    try {
-      await runtime.login(provider, "api_key", {
-        signal,
-        prompt: async (prompt) => {
-          checkCancellation(signal);
-          checkCancellation(prompt.signal);
-          // /apikey supplies a Bedrock bearer token, so no AWS-profile prompt is needed.
-          if (provider === "amazon-bedrock" && !supplied && prompt.type === "select" && prompt.options.some(option => option.id === "bearer-token")) return "bearer-token";
-          if (prompt.type !== "secret" || supplied) {
-            needsMoreInput = true;
-            throw new Error("Additional provider configuration required.");
-          }
-          supplied = true;
-          return literalKey(value);
-        },
-        // API-key setup must never echo a key or provider response into the transcript.
-        notify: () => {},
-      });
-    } catch (error) {
-      checkCancellation(signal);
-      if (needsMoreInput) throw new Error("This Xloom provider requires additional setup beyond an API key; use /login to complete its provider setup.");
-      if (error instanceof CredentialSynchronizationError) {
-        throw new Error("The credential was saved, but Xloom could not refresh its local state; restart Xloom and check /model.");
-      }
-      throw new Error("Xloom could not save the API key; check the local credential storage and retry /apikey.");
     }
   }
 
@@ -146,19 +108,7 @@ export class SettingsService {
     if (!supported) throw new Error("This Xloom provider does not support the requested authentication method; use /login to select a supported method.");
     try {
       // Pi owns the full provider flow and replaces the provider's one stored credential.
-      await runtime.login(provider, type, type === "oauth" ? interaction : {
-        ...interaction,
-        prompt: async prompt => {
-          const value = await interaction.prompt(prompt);
-          checkCancellation(interaction.signal);
-          checkCancellation(prompt.signal);
-          if (prompt.type === "secret") {
-            if (!value.trim() || /[\r\n\u0000]/u.test(value)) throw new Error("Enter a non-empty, single-line API key.");
-            return literalKey(value.trim());
-          }
-          return value;
-        },
-      });
+      await runtime.login(provider, type, interaction);
     } catch (error) {
       checkCancellation(interaction.signal);
       if (error instanceof CredentialSynchronizationError) {

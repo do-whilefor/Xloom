@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { AuthInteraction } from "@earendil-works/pi-ai";
+import type { AuthInteraction, AuthType } from "@earendil-works/pi-ai";
 import { visibleWidth, type Editor, type Terminal, type TuiAltScreen } from "@earendil-works/pi-tui";
 import type { BoardSnapshot, LoopEvent } from "../src/types.js";
 import { runTui } from "../src/ui/index.js";
 import { EventFeed, plainText, statusLine, type UiController } from "../src/ui/model.js";
 import { SettingsDialogs, SettingsPanel } from "../src/ui/settings-dialog.js";
+import type { ProviderChoice } from "../src/runtime/settings.js";
 import { WORK_PULSE_INTERVAL_MS } from "../src/ui/feed-view.js";
 
 class MemoryTerminal implements Terminal {
@@ -43,6 +44,7 @@ function launch(options: { now?: () => number; restoredReason?: string } = {}) {
   const listeners = new Set<(event: LoopEvent) => void>();
   if (options.restoredReason) { board.status = "stopped"; board.reason = options.restoredReason; }
   const info = { mode: "chat" as "chat" | "run", busy: false, model: "opencode-go/deepseek-v4-flash" };
+  const apiCredentials = vi.fn(async (_provider: string, _key: string, _signal?: AbortSignal) => {});
   const controller = {
     snapshot: vi.fn(() => board),
     subscribe: vi.fn((listener: (event: LoopEvent) => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; }),
@@ -53,12 +55,14 @@ function launch(options: { now?: () => number; restoredReason?: string } = {}) {
       { provider: "anthropic", model: "claude-sonnet-4", name: "Claude Sonnet" },
       { provider: "opencode-go", model: "deepseek-v4-flash", name: "DeepSeek V4 Flash" },
     ]),
-    getProviders: vi.fn(async () => [
+    getProviders: vi.fn(async (_mode?: "login" | "logout"): Promise<ProviderChoice[]> => [
       { id: "anthropic", name: "Anthropic", authTypes: ["api_key", "oauth"], stored: true },
       { id: "opencode-go", name: "OpenCode Go", authTypes: ["api_key"], stored: true },
     ]),
-    selectModel: vi.fn(async (_provider: string, _model: string, _role?: string, _signal?: AbortSignal) => {}), saveApiKey: vi.fn(async (_provider: string, _key: string, _signal?: AbortSignal) => {}),
-    login: vi.fn(async (_provider: string, _interaction: AuthInteraction) => {}), logout: vi.fn(async (_provider: string, _signal?: AbortSignal) => {}),
+    selectModel: vi.fn(async (_provider: string, _model: string, _role?: string, _signal?: AbortSignal) => {}),
+    login: vi.fn(async (provider: string, interaction: AuthInteraction, type?: AuthType) => {
+      if (type === "api_key") await apiCredentials(provider, await interaction.prompt({ type: "secret", message: "API Key" }), interaction.signal);
+    }), logout: vi.fn(async (_provider: string, _signal?: AbortSignal) => {}),
   } satisfies UiController;
   const terminal = new MemoryTerminal();
   const clipboard = { readText: vi.fn(async () => "PRIVATE_CLIPBOARD_KEY"), writeText: vi.fn(async () => true) };
@@ -67,14 +71,14 @@ function launch(options: { now?: () => number; restoredReason?: string } = {}) {
   const submit = (text: string): void => { controls.editor.setText(text); terminal.input("\r"); };
   const close = async (): Promise<void> => {
     if (!terminal.stopped) {
-      if (controls.tui.hasOverlay()) { terminal.input("\x1b"); await vi.waitFor(() => expect(controls.tui.hasOverlay()).toBe(false)); }
+      if (controls.tui.hasOverlay()) { terminal.input("\x1b"); await Promise.resolve(); await Promise.resolve(); terminal.input("\x1b"); await vi.waitFor(() => expect(controls.tui.hasOverlay()).toBe(false)); }
       submit("/exit");
     }
     await session;
   };
   cleanup.push(close);
   const settled = async (): Promise<void> => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); };
-  return { ...controls, board, info, controller, terminal, clipboard, submit, close, settled, session, listeners };
+  return { ...controls, board, info, controller, apiCredentials, terminal, clipboard, submit, close, settled, session, listeners };
 }
 
 // Focused OAuth interaction tests use a single-method fixture; unified method
@@ -489,9 +493,9 @@ describe("Pi-style model and credential dialogs", () => {
     app.submit("/board");
     app.submit("/login");
     await app.settled();
-    app.terminal.input("anthropic"); app.terminal.input("\r");
-    await app.settled();
     app.terminal.input(type === "oauth" ? "账号" : "API Key"); app.terminal.input("\r");
+    await app.settled();
+    app.terminal.input("anthropic"); app.terminal.input("\r");
     await vi.waitFor(() => expect(app.controller.login).toHaveBeenCalledWith("anthropic", expect.any(Object), type));
     app.terminal.input("PRIVATE_REPLACEMENT_CREDENTIAL");
     app.tui.renderNow(true);
@@ -502,15 +506,64 @@ describe("Pi-style model and credential dialogs", () => {
     app.terminal.input("\x1b[A");
     expect(app.editor.getExpandedText()).toBe("/board");
     expect(app.controller.chat).not.toHaveBeenCalled();
-    expect(app.controller.saveApiKey).not.toHaveBeenCalled();
+    expect(app.apiCredentials).not.toHaveBeenCalled();
   });
 
-  it("opens account-only Codex login directly without offering an API-key method", async () => {
+  it.each(["openai-codex", "OPENAI-CODEX", "OpenAI Codex"])("opens account-only Codex login directly by ID or name: %s", async reference => {
     const app = launch();
     app.controller.getProviders.mockResolvedValue([{ id: "openai-codex", name: "OpenAI Codex", authTypes: ["oauth"], stored: false }]);
-    app.submit("/login openai-codex");
+    app.submit(`/login ${reference}`);
     await vi.waitFor(() => expect(app.controller.login).toHaveBeenCalledWith("openai-codex", expect.any(Object), "oauth"));
-    expect(app.controller.saveApiKey).not.toHaveBeenCalled();
+    expect(app.apiCredentials).not.toHaveBeenCalled();
+  });
+
+  it("returns from the provider list to authentication methods on Escape", async () => {
+    const app = launch();
+    app.submit("/login"); await app.settled();
+    app.terminal.input("API Key"); app.terminal.input("\r"); await app.settled();
+    app.terminal.input("\x1b"); await app.settled();
+    expect(app.tui.hasOverlay()).toBe(true);
+    expect(app.controller.login).not.toHaveBeenCalled();
+    app.terminal.input("账号"); app.terminal.input("\r"); await app.settled();
+    app.terminal.input("anthropic"); app.terminal.input("\r");
+    await vi.waitFor(() => expect(app.controller.login).toHaveBeenCalledWith("anthropic", expect.any(Object), "oauth"));
+  });
+
+  it("uses an unmatched provider reference as a search across native auth methods", async () => {
+    const app = launch();
+    app.controller.login.mockResolvedValue(undefined);
+    app.submit("/login OpenCode"); await app.settled();
+    expect(app.controller.login).not.toHaveBeenCalled();
+    app.terminal.input("\r");
+    await vi.waitFor(() => expect(app.controller.login).toHaveBeenCalledWith("opencode-go", expect.any(Object), "api_key"));
+  });
+
+  it("displays the provider-owned OAuth login label", async () => {
+    const app = launch();
+    app.controller.getProviders.mockResolvedValue([{ id: "fixture", name: "Fixture", authTypes: ["api_key", "oauth"], stored: false, oauthLabel: "Native subscription label" }]);
+    app.submit("/login fixture"); await app.settled();
+    app.tui.renderNow(true);
+    expect(plainText(app.terminal.output)).toContain("Native subscription label");
+    app.terminal.input("\r");
+    await vi.waitFor(() => expect(app.controller.login).toHaveBeenCalledWith("fixture", expect.any(Object), "oauth"));
+  });
+
+  it("shows native ambient setup instead of starting an unsupported API-key login", async () => {
+    const app = launch();
+    app.controller.getProviders.mockResolvedValue([{ id: "fixture", name: "Fixture", authTypes: ["api_key"], stored: false, ambientAuth: "Ambient authentication" }]);
+    app.submit("/login fixture");
+    await vi.waitFor(() => expect(app.tui.hasOverlay()).toBe(false));
+    expect(app.controller.login).not.toHaveBeenCalled();
+    app.tui.renderNow(true);
+    expect(plainText(app.terminal.output)).toContain("Ambient authentication");
+  });
+
+  it("passes provider prompt responses through without custom trimming or key rewriting", async () => {
+    const app = launch();
+    const key = "  ${NATIVE_KEY}  ";
+    app.submit("/login opencode-go"); await app.settled();
+    app.terminal.input(key); app.terminal.input("\r");
+    await vi.waitFor(() => expect(app.apiCredentials).toHaveBeenCalledWith("opencode-go", key, expect.any(AbortSignal)));
   });
 
   it("cancels the authentication-method choice without replacing credentials", async () => {
@@ -520,21 +573,22 @@ describe("Pi-style model and credential dialogs", () => {
     app.terminal.input("\x1b");
     await vi.waitFor(() => expect(app.tui.hasOverlay()).toBe(false));
     expect(app.controller.login).not.toHaveBeenCalled();
-    expect(app.controller.saveApiKey).not.toHaveBeenCalled();
+    expect(app.apiCredentials).not.toHaveBeenCalled();
   });
 
-  it("routes /logout to saved providers and waits for its removal confirmation", async () => {
+  it("removes a stored credential immediately after selecting it through /logout", async () => {
     const app = launch();
-    app.submit("/logout opencode-go");
+    app.submit("/logout");
     await app.settled();
     expect(app.controller.logout).not.toHaveBeenCalled();
-    app.terminal.input("\r");
+    expect(app.controller.getProviders).toHaveBeenCalledWith("logout");
+    app.terminal.input("opencode"); app.terminal.input("\r");
     await vi.waitFor(() => expect(app.controller.logout).toHaveBeenCalledWith("opencode-go", expect.any(AbortSignal)));
   });
 
   it("does not offer environment-only providers for local credential removal", async () => {
     const app = launch();
-    app.controller.getProviders.mockResolvedValue([{ id: "opencode-go", name: "OpenCode Go", authTypes: ["api_key"], stored: false }]);
+    app.controller.getProviders.mockResolvedValue([]);
     app.submit("/logout");
     await vi.waitFor(() => expect(app.tui.hasOverlay()).toBe(false));
     expect(app.controller.logout).not.toHaveBeenCalled();
@@ -546,7 +600,7 @@ describe("Pi-style model and credential dialogs", () => {
     const app = launch();
     const providers = Promise.withResolvers<Awaited<ReturnType<typeof app.controller.getProviders>>>();
     app.controller.getProviders.mockReturnValue(providers.promise);
-    app.submit("/apikey");
+    app.submit("/login");
     app.tui.renderNow(true);
     expect(plainText(app.terminal.output)).toContain("正在读取 Xloom 配置");
     expect(plainText(app.terminal.output)).not.toContain("Pi");
@@ -554,13 +608,13 @@ describe("Pi-style model and credential dialogs", () => {
     await vi.waitFor(() => expect(app.tui.hasOverlay()).toBe(false));
   });
 
-  it("directs users to /apikey when no authenticated models are available", async () => {
+  it("directs users to /login when no authenticated models are available", async () => {
     const app = launch();
     app.controller.getModels.mockResolvedValue([]);
     app.submit("/model");
     await vi.waitFor(() => expect(app.tui.hasOverlay()).toBe(false));
     app.tui.renderNow(true);
-    expect(plainText(app.terminal.output)).toContain("请先使用 /login 登录或 /apikey");
+    expect(plainText(app.terminal.output)).toContain("请先使用 /login");
     expect(app.controller.selectModel).not.toHaveBeenCalled();
   });
 
@@ -580,17 +634,17 @@ describe("Pi-style model and credential dialogs", () => {
   it("accepts a masked API key without rendering it or recording it in editor history", async () => {
     const app = launch();
     app.submit("/board");
-    app.submit("/apikey opencode-go");
+    app.submit("/login opencode-go");
     await app.settled();
     app.terminal.input("PRIVATE_TEST_KEY");
     app.tui.renderNow(true);
     expect(plainText(app.terminal.output)).toContain("•••");
     expect(app.terminal.output).not.toContain("PRIVATE_TEST_KEY");
     app.terminal.input("\r");
-    await vi.waitFor(() => expect(app.controller.saveApiKey).toHaveBeenCalledWith("opencode-go", "PRIVATE_TEST_KEY", expect.any(AbortSignal)));
+    await vi.waitFor(() => expect(app.apiCredentials).toHaveBeenCalledWith("opencode-go", "PRIVATE_TEST_KEY", expect.any(AbortSignal)));
     await vi.waitFor(() => expect(app.tui.hasOverlay()).toBe(false));
     app.tui.renderNow(true);
-    expect(plainText(app.terminal.output)).toContain("opencode-go 的 API Key 已保存");
+    expect(plainText(app.terminal.output)).toContain("OpenCode Go 接入成功");
     expect(plainText(app.terminal.output)).toContain("/model");
     app.terminal.input("\x1b[A");
     expect(app.editor.getExpandedText()).toBe("/board");
@@ -598,16 +652,18 @@ describe("Pi-style model and credential dialogs", () => {
     expect(app.controller.hint).not.toHaveBeenCalled();
   });
 
-  it("selects API provider first when /apikey has no argument", async () => {
+  it("selects authentication method before provider when /login has no argument", async () => {
     const app = launch();
-    app.submit("/apikey");
+    app.submit("/login");
+    await app.settled();
+    app.terminal.input("API Key"); app.terminal.input("\r");
     await app.settled();
     app.terminal.input("opencode");
     app.terminal.input("\r");
     await app.settled();
     app.terminal.input("PRIVATE_SELECTED_KEY");
     app.terminal.input("\r");
-    await vi.waitFor(() => expect(app.controller.saveApiKey).toHaveBeenCalledWith("opencode-go", "PRIVATE_SELECTED_KEY", expect.any(AbortSignal)));
+    await vi.waitFor(() => expect(app.apiCredentials).toHaveBeenCalledWith("opencode-go", "PRIVATE_SELECTED_KEY", expect.any(AbortSignal)));
   });
 
   it("never saves or retains accidentally inline credentials", async () => {
@@ -616,7 +672,7 @@ describe("Pi-style model and credential dialogs", () => {
     app.submit("/apikey opencode-go PRIVATE_INLINE_KEY");
     app.tui.renderNow(true);
     expect(app.terminal.output).not.toContain("PRIVATE_INLINE_KEY");
-    expect(app.controller.saveApiKey).not.toHaveBeenCalled();
+    expect(app.apiCredentials).not.toHaveBeenCalled();
     expect(app.tui.hasOverlay()).toBe(false);
     app.terminal.input("\x1b[A");
     expect(app.editor.getExpandedText()).toBe("/board");
@@ -624,44 +680,44 @@ describe("Pi-style model and credential dialogs", () => {
 
   it("pastes secrets privately and requires Enter rather than treating pasted control bytes as commands", async () => {
     const app = launch();
-    app.submit("/apikey opencode-go");
+    app.submit("/login opencode-go");
     await app.settled();
     app.terminal.input("\x16");
     await vi.waitFor(() => expect(app.clipboard.readText).toHaveBeenCalledOnce());
     await app.settled();
     app.tui.renderNow(true);
     expect(app.terminal.output).not.toContain("PRIVATE_CLIPBOARD_KEY");
-    expect(app.controller.saveApiKey).not.toHaveBeenCalled();
+    expect(app.apiCredentials).not.toHaveBeenCalled();
     app.terminal.input("\r");
-    await vi.waitFor(() => expect(app.controller.saveApiKey).toHaveBeenCalledWith("opencode-go", "PRIVATE_CLIPBOARD_KEY", expect.any(AbortSignal)));
+    await vi.waitFor(() => expect(app.apiCredentials).toHaveBeenCalledWith("opencode-go", "PRIVATE_CLIPBOARD_KEY", expect.any(AbortSignal)));
   });
 
   it("cancels API key entry on Escape without storing a key", async () => {
     const app = launch();
-    app.submit("/apikey anthropic");
+    app.submit("/login opencode-go");
     await app.settled();
     app.terminal.input("PRIVATE_CANCELLED_KEY");
     app.terminal.input("\x1b");
     await vi.waitFor(() => expect(app.tui.hasOverlay()).toBe(false));
-    expect(app.controller.saveApiKey).not.toHaveBeenCalled();
+    expect(app.apiCredentials).not.toHaveBeenCalled();
     expect(app.controller.pause).not.toHaveBeenCalled();
     expect(app.terminal.output).not.toContain("PRIVATE_CANCELLED_KEY");
   });
 
-  it.each(["apikey", "model", "logout"] as const)("passes cancellation through an in-flight %s commit", async command => {
+  it.each(["api_key", "model", "logout"] as const)("passes cancellation through an in-flight %s commit", async command => {
     const app = launchAuthDialogs();
     let signal: AbortSignal | undefined;
     const wait = (value?: AbortSignal): Promise<void> => {
       signal = value;
       return new Promise((_resolve, reject) => value!.addEventListener("abort", () => reject(new Error("cancelled")), { once: true }));
     };
-    app.controller.saveApiKey.mockImplementation((_provider, _key, value) => wait(value));
+    app.apiCredentials.mockImplementation((_provider, _key, value) => wait(value));
     app.controller.selectModel.mockImplementation((_provider, _model, _role, value) => wait(value));
     app.controller.logout.mockImplementation((_provider, value) => wait(value));
     if (command === "logout") app.openAuth("logout", "anthropic");
-    else app.submit(command === "model" ? "/model" : "/apikey opencode-go");
+    else app.submit(command === "model" ? "/model" : "/login opencode-go");
     await app.settled();
-    if (command === "apikey") app.terminal.input("PRIVATE_KEY_IN_FLIGHT");
+    if (command === "api_key") app.terminal.input("PRIVATE_KEY_IN_FLIGHT");
     app.terminal.input("\r");
     await vi.waitFor(() => expect(signal).toBeDefined());
     app.terminal.input("\x1b");
@@ -677,19 +733,19 @@ describe("Pi-style model and credential dialogs", () => {
     const app = launch();
     let resolve!: (text: string) => void;
     app.clipboard.readText.mockImplementation(() => new Promise(done => { resolve = done; }));
-    app.submit("/apikey anthropic");
+    app.submit("/login opencode-go");
     await app.settled();
     app.terminal.input("OLD");
     app.terminal.input("\x16");
     app.terminal.input("\r");
-    expect(app.controller.saveApiKey).not.toHaveBeenCalled();
+    expect(app.apiCredentials).not.toHaveBeenCalled();
     await vi.waitFor(() => expect(app.clipboard.readText).toHaveBeenCalledOnce());
     app.terminal.input("\x03");
     app.terminal.input("NEW_KEY");
     resolve("STALE_SECRET");
     await app.settled();
     app.terminal.input("\r");
-    await vi.waitFor(() => expect(app.controller.saveApiKey).toHaveBeenCalledWith("anthropic", "NEW_KEY", expect.any(AbortSignal)));
+    await vi.waitFor(() => expect(app.apiCredentials).toHaveBeenCalledWith("opencode-go", "NEW_KEY", expect.any(AbortSignal)));
   });
 
   it("honors cancellation while a provider catalog is loading before starting login", async () => {
@@ -762,6 +818,7 @@ describe("Pi-style model and credential dialogs", () => {
 
   it("accepts an API-only provider through the unified login dialog", async () => {
     const app = launchAuthDialogs();
+    app.controller.login.mockResolvedValue(undefined);
     app.openAuth("login", "opencode-go");
     await vi.waitFor(() => expect(app.tui.hasOverlay()).toBe(false));
     expect(app.controller.login).toHaveBeenCalledWith("opencode-go", expect.any(Object), "api_key");
@@ -773,10 +830,12 @@ describe("Pi-style model and credential dialogs", () => {
     const app = launchAuthDialogs();
     let domain: string | undefined;
     app.controller.login.mockImplementation(async (_provider, interaction) => {
-      domain = await interaction.prompt({ type: "text", message: "GitHub Enterprise URL/domain (blank for github.com)" });
+      domain = await interaction.prompt({ type: "text", message: "GitHub Enterprise URL/domain (blank for github.com)", placeholder: "github.example.test" });
     });
     app.openAuth("login", "anthropic");
     await app.settled();
+    app.tui.renderNow(true);
+    expect(plainText(app.terminal.output)).toContain("github.example.test");
     app.terminal.input("\r");
     await vi.waitFor(() => expect(app.tui.hasOverlay()).toBe(false));
     expect(domain).toBe("");
@@ -804,11 +863,16 @@ describe("Pi-style model and credential dialogs", () => {
     expect(app.controller.chat).not.toHaveBeenCalled();
   });
 
-  it.each(["secret", "manual_code"] as const)("continues to require non-empty, masked OAuth %s input", async type => {
+  it.each(["secret", "manual_code"] as const)("leaves OAuth %s validation to the provider while masking repeated prompts", async type => {
     const app = launchAuthDialogs();
     let entered: string | undefined;
+    const submitted: string[] = [];
     app.controller.login.mockImplementation(async (_provider, interaction) => {
-      entered = await interaction.prompt({ type, message: "Enter credential" });
+      do {
+        const value = await interaction.prompt({ type, message: "Enter credential" });
+        submitted.push(value);
+        if (value) entered = value;
+      } while (!entered);
     });
     app.openAuth("login", "anthropic");
     await app.settled();
@@ -816,6 +880,7 @@ describe("Pi-style model and credential dialogs", () => {
     await app.settled();
     expect(app.tui.hasOverlay()).toBe(true);
     expect(entered).toBeUndefined();
+    expect(submitted).toEqual([""]);
     app.terminal.input("PRIVATE_NONEMPTY_CREDENTIAL");
     app.tui.renderNow(true);
     expect(app.terminal.output).not.toContain("PRIVATE_NONEMPTY_CREDENTIAL");
@@ -861,11 +926,11 @@ describe("Pi-style model and credential dialogs", () => {
   it("aborts pending API key save during terminal exit and restores terminal", async () => {
     const app = launch();
     let signal: AbortSignal | undefined;
-    app.controller.saveApiKey.mockImplementation(async (_provider, _key, operationSignal) => {
+    app.apiCredentials.mockImplementation(async (_provider, _key, operationSignal) => {
       signal = operationSignal;
       await new Promise<void>((_resolve, reject) => signal!.addEventListener("abort", () => reject(new Error("cancelled")), { once: true }));
     });
-    app.submit("/apikey anthropic");
+    app.submit("/login opencode-go");
     await app.settled();
     app.terminal.input("PRIVATE_PENDING_KEY");
     app.terminal.input("\r");
@@ -891,7 +956,7 @@ describe("Pi-style model and credential dialogs", () => {
     expect(signal?.aborted).toBe(false);
   });
 
-  it("requires confirmation for logout and keeps provider error details private", async () => {
+  it("keeps provider error details private when a selected logout fails", async () => {
     const app = launchAuthDialogs();
     app.controller.logout.mockRejectedValue(new Error("PRIVATE_PROVIDER_ERROR"));
     app.openAuth("logout", "anthropic");

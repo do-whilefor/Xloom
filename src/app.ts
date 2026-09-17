@@ -17,7 +17,7 @@ import type { AgentRole, AgentRunner, BoardSnapshot, LoopEvent, ModelConfig, Pro
 export interface AppOptions {
   runner?: AgentRunner;
   chat?: { send(request: ChatRequest): Promise<Usage>; reset(): void; close?(): void; getUsage?(): Usage; history?(): ReturnType<ChatSession["history"]> };
-  settings?: Pick<SettingsService, "listModels" | "listProviders" | "saveApiKey" | "login" | "logout"> & Partial<Pick<SettingsService, "describeModel">>;
+  settings?: Pick<SettingsService, "listModels" | "listProviders" | "login" | "logout"> & Partial<Pick<SettingsService, "describeModel">>;
 }
 
 /** Chat owns its history. A red-team task owns a separate blackboard, never that history. */
@@ -233,7 +233,7 @@ export class AppController {
   async getModels() {
     return this.settings.listModels(Object.values(this.config.models).filter((model): model is ModelConfig => Boolean(model)));
   }
-  getProviders() { return this.settings.listProviders(); }
+  getProviders(mode: "login" | "logout" = "login") { return this.settings.listProviders(mode); }
   private persistModels(models: ProjectConfig["models"]): void {
     const config = projectConfigSchema.parse({ ...this.config, models });
     saveConfig(this.configPath, config);
@@ -253,7 +253,7 @@ export class AppController {
     return this.perform(this.mode, async signal => {
       const models = await this.getModels();
       signal.throwIfAborted();
-      if (!models.some(item => item.provider === provider && item.model === model)) throw new Error("模型不在 Xloom 已接入目录中。请先使用 /login 登录或 /apikey 配置对应供应商，再使用 /model 选择模型。");
+      if (!models.some(item => item.provider === provider && item.model === model)) throw new Error("模型不在 Xloom 已接入目录中。请先使用 /login 接入对应供应商，再使用 /model 选择模型。");
       const next = structuredClone(this.config.models);
       // Keep this model's explicit endpoint/credential overrides; other choices
       // use Pi defaults instead of inheriting another model's endpoint/limits.
@@ -267,16 +267,12 @@ export class AppController {
     for (const model of Object.values(models)) if (model?.provider === provider) delete model.apiKeyEnv;
     this.persistModels(models);
   }
-  saveApiKey(provider: string, key: string, externalSignal?: AbortSignal): Promise<void> {
-    return this.perform(this.mode, async signal => { await this.settings.saveApiKey(provider, key, signal); signal.throwIfAborted(); this.useStoredCredential(provider); }, externalSignal);
-  }
   login(provider: string, interaction: AuthInteraction, type: AuthType = "oauth"): Promise<void> {
     return this.perform(this.mode, async signal => {
-      const combined = interaction.signal ? AbortSignal.any([signal, interaction.signal]) : signal;
-      await this.settings.login(provider, { ...interaction, signal: combined }, type);
-      combined.throwIfAborted();
+      await this.settings.login(provider, { ...interaction, signal }, type);
+      signal.throwIfAborted();
       this.useStoredCredential(provider);
-    });
+    }, interaction.signal);
   }
   logout(provider: string, externalSignal?: AbortSignal): Promise<void> {
     return this.perform(this.mode, async signal => {

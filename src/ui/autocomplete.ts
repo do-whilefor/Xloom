@@ -10,9 +10,8 @@ export interface CommandDefinition {
 export const COMMANDS = [
   { name: "/run", argumentHint: "<目标>", description: "启动独立的双 Agent 任务" },
   { name: "/model", argumentHint: "[角色]", description: "选择聊天或 Agent 使用的模型" },
-  { name: "/apikey", argumentHint: "[供应商]", description: "在私密输入框中设置 API Key" },
   { name: "/login", argumentHint: "[供应商]", description: "选择账号登录或 API Key 接入" },
-  { name: "/logout", argumentHint: "[供应商]", description: "移除供应商的本地凭据" },
+  { name: "/logout", description: "移除供应商的本地凭据" },
   { name: "/new", description: "新建普通聊天，保留历史与任务黑板" },
   { name: "/history", description: "查看当前聊天的保存内容和路径" },
   { name: "/start", description: "开始或恢复当前任务" },

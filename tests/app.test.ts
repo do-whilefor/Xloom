@@ -13,6 +13,7 @@ import type { LoopEvent, RunRequest } from "../src/types.js";
 
 const roots: string[] = [];
 const apps: AppController[] = [];
+const apiLogin = (app: AppController, provider: string, key: string, signal?: AbortSignal) => app.login(provider, { signal, prompt: async () => key, notify() {} }, "api_key");
 const usage = { input: 3, output: 2, cost: 0.01 };
 function setup(options: AppOptions = {}, describeModel?: NonNullable<AppOptions["settings"]>["describeModel"]) {
   const root = mkdtempSync(path.join(tmpdir(), "xloom-app-test-")); roots.push(root);
@@ -25,7 +26,6 @@ function setup(options: AppOptions = {}, describeModel?: NonNullable<AppOptions[
     ...(describeModel ? { describeModel } : {}),
     listModels: vi.fn(async () => [{ provider: "fixture", model: "model-a", name: "Model A" }, { provider: "fixture", model: "model-b", name: "Model B" }]),
     listProviders: vi.fn(async () => [{ id: "fixture", name: "Fixture", authTypes: ["api_key", "oauth"] }]),
-    saveApiKey: vi.fn(async (_provider: string, _key: string, _signal?: AbortSignal) => {}),
     login: vi.fn(async (_provider: string, _interaction: AuthInteraction) => {}), logout: vi.fn(async (_provider: string, _signal?: AbortSignal) => {}),
   };
   const runner = { run: vi.fn(async (request: RunRequest) => { runRequests.push(request); return { output: { summary: "No executable plan proposed by this fixture" }, usage }; }) };
@@ -162,7 +162,7 @@ describe("session header metadata", () => {
     await vi.waitFor(() => expect(describe).toHaveBeenCalledTimes(1));
     resolve({ contextWindow: 128_000, authLabel: "未配置认证" });
     await vi.waitFor(() => expect(test.app.getSessionInfo().authLabel).toBe("未配置认证"));
-    await test.app.saveApiKey(test.config.models.execute.provider, "synthetic-key");
+    await apiLogin(test.app, test.config.models.execute.provider, "synthetic-key");
     await vi.waitFor(() => expect(describe).toHaveBeenCalledTimes(2));
     await test.app.close();
     expect(signal?.aborted).toBe(true);
@@ -430,7 +430,7 @@ describe("application model settings", () => {
     const current = test.config.models.execute;
     const before = readFileSync(test.configPath, "utf8");
     expect(await test.app.getModels()).toEqual([]);
-    await expect(test.app.selectModel(current.provider, current.model)).rejects.toThrow(/apikey/);
+    await expect(test.app.selectModel(current.provider, current.model)).rejects.toThrow(/login/);
     expect(readFileSync(test.configPath, "utf8")).toBe(before);
     expect(test.chat.reset).not.toHaveBeenCalled();
   });
@@ -438,8 +438,9 @@ describe("application model settings", () => {
   it("passes a secret only to Pi settings, never the model, config or events", async () => {
     const test = setup(); await test.app.selectModel("fixture", "model-a");
     const key = "TEST_SECRET_NOT_A_REAL_KEY";
-    await test.app.saveApiKey("fixture", key);
-    expect(test.settings.saveApiKey).toHaveBeenCalledWith("fixture", key, expect.any(AbortSignal));
+    await apiLogin(test.app, "fixture", key);
+    expect(test.settings.login).toHaveBeenCalledWith("fixture", expect.objectContaining({ signal: expect.any(AbortSignal) }), "api_key");
+    expect(await test.settings.login.mock.calls[0]![1].prompt({ type: "secret", message: "Key" })).toBe(key);
     expect(readFileSync(test.configPath, "utf8")).not.toContain(key);
     expect(JSON.stringify(test.events)).not.toContain(key);
     expect(test.chat.send).not.toHaveBeenCalled(); expect(test.runner.run).not.toHaveBeenCalled();
@@ -487,22 +488,19 @@ describe("application model settings", () => {
     const test = setup(); await test.app.close();
     test.config.models.execute = { provider: "fixture", model: "model-a", apiKeyEnv: "OLD_KEY_ENV" };
     const app = new AppController(test.root, test.configPath, test.config, { settings: test.settings, chat: test.chat }); apps.push(app);
-    await app.saveApiKey("fixture", "fixture-key");
+    await apiLogin(app, "fixture", "fixture-key");
     expect(loadConfig(test.configPath).models.execute.apiKeyEnv).toBeUndefined();
   });
 
-  it.each(["apikey", "login"] as const)("uses replacement credentials for every role on the next request through /%s", async command => {
+  it.each(["api_key", "oauth"] as const)("uses replacement credentials for every role on the next request through %s login", async type => {
     const test = setup(); await test.app.close();
     test.chat.reset.mockClear();
     const selected = { provider: "fixture", model: "model-a", apiKeyEnv: "OLD_KEY_ENV" };
     test.config.models = { chat: selected, decide: selected, execute: selected };
     const app = new AppController(test.root, test.configPath, test.config, { settings: test.settings, chat: test.chat }); apps.push(app);
     await app.chat("Before replacement");
-    if (command === "apikey") await app.saveApiKey("fixture", "replacement-key");
-    else {
-      await app.login("fixture", { prompt: async () => "replacement-key", notify() {} }, "api_key");
-      expect(test.settings.login).toHaveBeenCalledWith("fixture", expect.objectContaining({ signal: expect.any(AbortSignal) }), "api_key");
-    }
+    await app.login("fixture", { prompt: async () => "replacement-key", notify() {} }, type);
+    expect(test.settings.login).toHaveBeenCalledWith("fixture", expect.objectContaining({ signal: expect.any(AbortSignal) }), type);
     expect(test.chat.reset).toHaveBeenCalledOnce();
     for (const model of Object.values(loadConfig(test.configPath).models)) expect(model?.apiKeyEnv).toBeUndefined();
     await app.chat("After replacement");
@@ -546,15 +544,15 @@ describe("application model settings", () => {
     expect(test.chatRequests[0]?.model).toEqual(selected);
   });
 
-  it.each(["model", "apikey", "logout"] as const)("does not start an already-cancelled %s setting operation", async kind => {
+  it.each(["model", "api_key", "logout"] as const)("does not start an already-cancelled %s setting operation", async kind => {
     const test = setup();
     const before = readFileSync(test.configPath, "utf8");
     const abort = new AbortController(); abort.abort();
     const pending = kind === "model" ? test.app.selectModel("fixture", "model-a", "all", abort.signal)
-      : kind === "apikey" ? test.app.saveApiKey("fixture", "synthetic-key", abort.signal) : test.app.logout("fixture", abort.signal);
+      : kind === "api_key" ? apiLogin(test.app, "fixture", "synthetic-key", abort.signal) : test.app.logout("fixture", abort.signal);
     await expect(pending).rejects.toThrow();
     expect(test.settings.listModels).not.toHaveBeenCalled();
-    expect(test.settings.saveApiKey).not.toHaveBeenCalled();
+    expect(test.settings.login).not.toHaveBeenCalled();
     expect(test.settings.logout).not.toHaveBeenCalled();
     expect(test.chat.reset).not.toHaveBeenCalled();
     expect(readFileSync(test.configPath, "utf8")).toBe(before);
@@ -579,7 +577,7 @@ describe("application model settings", () => {
     expect(test.chat.reset).not.toHaveBeenCalled();
   });
 
-  it.each(["apikey", "logout"] as const)("propagates an in-flight %s cancellation without committing or resetting chat", async kind => {
+  it.each(["api_key", "logout"] as const)("propagates an in-flight %s cancellation without committing or resetting chat", async kind => {
     const test = setup();
     const before = readFileSync(test.configPath, "utf8");
     let received: AbortSignal | undefined;
@@ -590,10 +588,10 @@ describe("application model settings", () => {
       // A cancelled backend never reaches its persistence step.
       if (!signal) { committed = true; resolve(); }
     });
-    test.settings.saveApiKey.mockImplementation((_provider, _key, signal) => cancelAwareOperation(signal));
+    test.settings.login.mockImplementation((_provider, interaction) => cancelAwareOperation(interaction.signal));
     test.settings.logout.mockImplementation((_provider, signal) => cancelAwareOperation(signal));
     const abort = new AbortController();
-    const pending = kind === "apikey" ? test.app.saveApiKey("fixture", "synthetic-key", abort.signal) : test.app.logout("fixture", abort.signal);
+    const pending = kind === "api_key" ? apiLogin(test.app, "fixture", "synthetic-key", abort.signal) : test.app.logout("fixture", abort.signal);
     const settled = expect(pending).rejects.toThrow("Cancelled");
     await vi.waitFor(() => expect(received).toBeDefined());
     abort.abort(); await settled;
@@ -608,9 +606,9 @@ describe("application model settings", () => {
     const test = setup();
     const before = readFileSync(test.configPath, "utf8");
     let release!: () => void;
-    test.settings.saveApiKey.mockImplementation(() => new Promise(resolve => { release = resolve; }));
+    test.settings.login.mockImplementation(() => new Promise(resolve => { release = resolve; }));
     const abort = new AbortController();
-    const pending = test.app.saveApiKey("fixture", "synthetic-key", abort.signal);
+    const pending = apiLogin(test.app, "fixture", "synthetic-key", abort.signal);
     const settled = expect(pending).rejects.toThrow();
     await vi.waitFor(() => expect(release).toBeDefined());
     abort.abort(); release(); await settled;
@@ -635,18 +633,17 @@ describe("application model settings", () => {
 
 describe("workspace ownership", () => {
   for (const status of ["paused", "error"] as const) {
-    it.each(["model", "apikey", "login", "logout"] as const)(`closes a pending %s setting without overwriting the task's ${status} diagnosis`, async kind => {
+    it.each(["model", "api_key", "login", "logout"] as const)(`closes a pending %s setting without overwriting the task's ${status} diagnosis`, async kind => {
       const test = setup();
       if (status === "error") test.runner.run.mockRejectedValue(new Error("Synthetic original task failure"));
       await test.app.runGoal("Preserve the task while cancelling a setting");
       const before = test.app.snapshot(), started = Promise.withResolvers<AbortSignal | undefined>(), release = Promise.withResolvers<void>();
       const configure = async (signal?: AbortSignal) => { started.resolve(signal); await release.promise; signal?.throwIfAborted(); };
       test.settings.listModels.mockImplementation(async () => { await configure(); return [{ provider: "fixture", model: "model-a", name: "Model A" }]; });
-      test.settings.saveApiKey.mockImplementation((_provider, _key, signal) => configure(signal));
       test.settings.login.mockImplementation((_provider, interaction) => configure(interaction.signal));
       test.settings.logout.mockImplementation((_provider, signal) => configure(signal));
       const pending = kind === "model" ? test.app.selectModel("fixture", "model-a")
-        : kind === "apikey" ? test.app.saveApiKey("fixture", "synthetic-key")
+        : kind === "api_key" ? apiLogin(test.app, "fixture", "synthetic-key")
         : kind === "login" ? test.app.login("fixture", { notify() {}, async prompt() { return "synthetic-answer"; } }) : test.app.logout("fixture");
       const settled = expect(pending).rejects.toThrow();
       const signal = await started.promise;

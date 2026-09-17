@@ -3,11 +3,13 @@ import { CURSOR_MARKER, Input, matchesKey, SelectList, truncateToWidth,
   type Component, type Focusable, type OverlayHandle, type SelectItem, type TuiAltScreen } from "@earendil-works/pi-tui";
 import type { AuthEvent, AuthInteraction, AuthPrompt, AuthType } from "@earendil-works/pi-ai";
 import type { Clipboard } from "./clipboard.js";
+import type { ProviderChoice } from "../runtime/settings.js";
 import { fitLines, plainText, type ModelRole, type SettingsCommand, type UiController } from "./model.js";
 
 const coral = chalk.hex("#D98B73");
 const listTheme = { selectedPrefix: coral, selectedText: coral, description: chalk.gray, scrollInfo: chalk.gray, noMatch: chalk.gray };
 const cancelled = (): Error => Object.assign(new Error("设置已取消。"), { name: "AbortError" });
+type PromptOptions = { secret?: boolean; allowEmpty?: boolean; items?: SelectItem[]; initialSearch?: string; verbatim?: boolean; back?: boolean };
 
 /** Private overlay state is never appended to the feed or main Editor history. */
 export class SettingsPanel implements Component, Focusable {
@@ -16,6 +18,7 @@ export class SettingsPanel implements Component, Focusable {
   private items: SelectItem[] = [];
   private secret = false;
   private allowEmpty = false;
+  private verbatim = false;
   private inputEnabled = false;
   private pasteBuffer: string | undefined;
   private submit?: (value: string) => void;
@@ -32,7 +35,7 @@ export class SettingsPanel implements Component, Focusable {
   }
   private createInput(): Input {
     const input = new Input();
-    input.onSubmit = value => { if (this.inputEnabled && !this.pastePending && !this.list && (this.allowEmpty || value.trim())) this.submit?.(value.trim()); };
+    input.onSubmit = value => { if (this.inputEnabled && !this.pastePending && !this.list && (this.allowEmpty || value.trim())) this.submit?.(this.verbatim ? value : value.trim()); };
     input.onEscape = () => this.onCancel?.();
     return input;
   }
@@ -42,7 +45,7 @@ export class SettingsPanel implements Component, Focusable {
   invalidate(): void { this.input.invalidate(); this.list?.invalidate(); }
   setNotices(lines: string[]): void { this.notices = lines.map(plainText).slice(-8); this.renderAgain(); }
   setCopyStatus(message: string): void { this.copyStatus = message; this.renderAgain(); }
-  setPrompt(question: string, options: { secret?: boolean; allowEmpty?: boolean; items?: SelectItem[] } | undefined, submit?: (value: string) => void): void {
+  setPrompt(question: string, options: PromptOptions | undefined, submit?: (value: string) => void): void {
     this.generation++;
     this.question = plainText(question);
     // Pi Input retains undo/kill-ring data after setValue; never carry it across prompts.
@@ -53,10 +56,12 @@ export class SettingsPanel implements Component, Focusable {
     this.pastePending = false;
     this.secret = options?.secret ?? false;
     this.allowEmpty = options?.allowEmpty ?? false;
+    this.verbatim = options?.verbatim ?? false;
     this.items = (options?.items ?? []).map(item => ({ ...item, label: plainText(item.label), description: item.description ? plainText(item.description) : undefined }));
     this.submit = submit;
     this.inputEnabled = Boolean(submit);
     this.list = options?.items ? this.makeList(this.items) : undefined;
+    if (options?.initialSearch) { this.input.setValue(options.initialSearch); this.filter(); }
     this.renderAgain();
   }
   private makeList(items: SelectItem[]): SelectList {
@@ -161,17 +166,46 @@ export class SettingsDialogs {
     this.clipboardTasks.add(task);
     void task.finally(() => this.clipboardTasks.delete(task));
   }
-  private ask(message: string, options: { secret?: boolean; allowEmpty?: boolean; items?: SelectItem[] }, promptSignal?: AbortSignal): Promise<string> {
+  private ask(message: string, options: PromptOptions, promptSignal?: AbortSignal): Promise<string> {
     const signal = this.abort!.signal;
     const panel = this.panel!;
     if (signal.aborted || promptSignal?.aborted) return Promise.reject(cancelled());
     return new Promise((resolve, reject) => {
-      const cleanup = (): void => { signal.removeEventListener("abort", onAbort); promptSignal?.removeEventListener("abort", onAbort); panel.setPrompt("等待提供方响应…", undefined); };
+      const cleanup = (): void => { signal.removeEventListener("abort", onAbort); promptSignal?.removeEventListener("abort", onAbort); panel.onCancel = () => this.cancel(); panel.setPrompt("等待提供方响应…", undefined); };
       const onAbort = (): void => { cleanup(); reject(cancelled()); };
+      if (options.back) panel.onCancel = () => { cleanup(); reject(Object.assign(new Error("返回接入方式"), { name: "AuthBack" })); };
       signal.addEventListener("abort", onAbort, { once: true });
       promptSignal?.addEventListener("abort", onAbort, { once: true });
       panel.setPrompt(message, options, value => { cleanup(); resolve(value); });
     });
+  }
+  private async selectLogin(providers: ProviderChoice[], reference: string): Promise<{ provider: ProviderChoice; type: AuthType } | undefined> {
+    const methods = (provider?: ProviderChoice): SelectItem[] => [
+      ...(!provider || provider.authTypes.includes("oauth") ? [{ value: "oauth", label: provider?.oauthLabel ?? "账号登录" }] : []),
+      ...(!provider || provider.authTypes.includes("api_key") ? [{ value: "api_key", label: "API Key" }] : []),
+    ];
+    const exact = providers.filter(provider => [provider.id, provider.name].some(value => value.toLowerCase() === reference.toLowerCase()));
+    if (reference && exact.length === 1) {
+      const provider = exact[0]!, choices = methods(provider);
+      if (!choices.length) return undefined;
+      const type = (choices.length === 1 ? choices[0]!.value : await this.ask(`${provider.name}：选择接入方式`, { items: choices })) as AuthType;
+      return { provider, type };
+    }
+    for (;;) {
+      const type = reference ? undefined : await this.ask("选择接入方式", { items: methods() }) as AuthType;
+      const options = providers.flatMap(provider => methods(provider).filter(method => !type || method.value === type).map(method => ({ provider, type: method.value as AuthType })));
+      if (!options.length) { this.print("xloom", "没有支持此认证方式的提供方。", true); return undefined; }
+      try {
+        const selected = await this.ask("选择提供方（输入名称搜索）", { initialSearch: reference, back: Boolean(type), items: options.map(({ provider, type }) => ({
+          value: `${type}:${provider.id}`, label: provider.name,
+          description: `${provider.id}${reference ? ` · ${type === "oauth" ? "账号登录" : "API Key"}` : ""}${provider.stored ? " · 已保存凭据" : ""}`,
+        })) });
+        return options.find(option => `${option.type}:${option.provider.id}` === selected)!;
+      } catch (error) {
+        if (error instanceof Error && error.name === "AuthBack") continue;
+        throw error;
+      }
+    }
   }
   private notify(event: AuthEvent): void {
     const candidate = event.type === "auth_url" ? event.url : event.type === "device_code" ? event.verificationUri : event.type === "info" ? event.links?.[0]?.url : undefined;
@@ -194,7 +228,7 @@ export class SettingsDialogs {
     if (this.panel) throw new Error("请先完成或取消当前设置。");
     if (this.controller.getSessionInfo?.().busy) throw new Error("模型正在运行，请先 /pause 再修改设置。");
     this.abort = new AbortController();
-    this.panel = new SettingsPanel(command === "model" ? "选择模型" : command === "apikey" ? "API Key" : command === "login" ? "登录与接入" : "移除本地凭据", () => this.tui.requestRender());
+    this.panel = new SettingsPanel(command === "model" ? "选择模型" : command === "login" ? "登录与接入" : "移除本地凭据", () => this.tui.requestRender());
     this.panel.onCancel = () => this.cancel();
     this.panel.onPaste = () => this.paste();
     this.panel.setPrompt("正在读取 Xloom 配置…", undefined);
@@ -205,7 +239,7 @@ export class SettingsDialogs {
         const models = await this.controller.getModels();
         if (this.abort.signal.aborted) throw cancelled();
         const items = models.map(model => ({ value: `${model.provider}/${model.model}`, label: `${model.provider}/${model.model}`, description: model.name }));
-        if (!items.length) { this.print("xloom", "没有已接入的模型。请先使用 /login 登录或 /apikey 配置供应商，再使用 /model 选择模型。", true); return; }
+        if (!items.length) { this.print("xloom", "没有已接入的模型。请先使用 /login 接入供应商，再使用 /model 选择模型。", true); return; }
         const selected = await this.ask(`选择 ${argument || "all"} 模型（仅已接入供应商；输入名称搜索）`, { items });
         if (this.abort.signal.aborted) throw cancelled();
         const model = models[items.findIndex(item => item.value === selected)]!;
@@ -213,45 +247,31 @@ export class SettingsDialogs {
         this.print("xloom", `模型已更新：${argument || "all"} → ${model.provider}/${model.model}`);
       } else {
         if (!this.controller.getProviders) throw new Error("unsupported");
-        const providers = await this.controller.getProviders();
+        const providers = await this.controller.getProviders(command);
         if (this.abort.signal.aborted) throw cancelled();
-        const eligible = command === "login" ? providers.filter(provider => provider.authTypes.some(type => type === "oauth" || type === "api_key"))
-          : command === "apikey" ? providers.filter(provider => provider.authTypes.includes("api_key")) : providers.filter(provider => provider.stored);
-        if (!eligible.length) { this.print("xloom", command === "logout" ? "没有可移除的本地凭据；环境变量和模型配置中的凭据不受影响。" : "没有支持此认证方式的提供方。", true); return; }
-        let provider = argument;
-        if (!provider) provider = await this.ask("选择提供方（输入名称搜索）", { items: eligible.map(item => ({ value: item.id, label: item.name,
-          description: `${item.id}${item.stored ? " · 已保存凭据" : ""}` })) });
-        if (!eligible.some(item => item.id === provider)) { this.print("xloom", "提供方不存在或不支持此认证方式；请不带参数打开选择器。", true); return; }
-        if (command === "apikey") {
-          if (!this.controller.saveApiKey) throw new Error("unsupported");
-          const key = await this.ask(`${provider} API Key（输入将遮蔽，不进入会话和历史）`, { secret: true });
-          if (this.abort.signal.aborted) throw cancelled();
-          await this.controller.saveApiKey(provider, key, this.abort.signal);
-          this.print("xloom", `${provider} 的 API Key 已保存并立即生效，旧凭据已替换且不另存。使用 /model 选择该供应商的模型。`);
-        } else if (command === "logout") {
+        if (!providers.length) { this.print("xloom", command === "logout" ? "没有可移除的本地凭据；环境变量和模型配置中的凭据不受影响。" : "没有支持此认证方式的提供方。", true); return; }
+        if (command === "logout") {
           if (!this.controller.logout) throw new Error("unsupported");
-          await this.ask(`确认移除 ${provider} 的本地凭据？环境变量中的凭据不受影响。`, { items: [{ value: "yes", label: "确认移除本地凭据" }] });
+          const provider = await this.ask("选择要移除本地凭据的提供方", { items: providers.map(item => ({ value: item.id, label: item.name, description: item.id })) });
           if (this.abort.signal.aborted) throw cancelled();
           await this.controller.logout(provider, this.abort.signal);
-          this.print("xloom", "已移除该提供方的本地凭据；环境变量中的凭据不受影响。");
+          this.print("xloom", "已移除该提供方的本地凭据；环境变量和模型配置中的凭据不受影响。");
         } else {
           if (!this.controller.login) throw new Error("unsupported");
-          const methods = eligible.find(item => item.id === provider)!.authTypes;
-          const choices = [
-            ...(methods.includes("oauth") ? [{ value: "oauth", label: "账号登录", description: "通过浏览器或设备码授权" }] : []),
-            ...(methods.includes("api_key") ? [{ value: "api_key", label: "API Key", description: "输入新凭据并替换该供应商的旧凭据" }] : []),
-          ];
-          const type = (choices.length === 1 ? choices[0]!.value : await this.ask(`${provider}：选择接入方式`, { items: choices })) as AuthType;
+          const selected = await this.selectLogin(providers, argument);
+          if (!selected) return;
+          const { provider, type } = selected;
           if (this.abort.signal.aborted) throw cancelled();
+          if (type === "api_key" && provider.ambientAuth) { this.print("xloom", `${provider.name}：${provider.ambientAuth} 通过 Xloom 外部的环境或配置文件设置。`); return; }
           const interaction: AuthInteraction = {
             signal: this.abort.signal,
             notify: event => { if (!this.abort?.signal.aborted) this.notify(event); },
-            prompt: (prompt: AuthPrompt) => this.ask(prompt.message, prompt.type === "select"
+            prompt: (prompt: AuthPrompt) => this.ask("placeholder" in prompt && prompt.placeholder ? `${prompt.message}\n${prompt.placeholder}` : prompt.message, prompt.type === "select"
               ? { items: prompt.options.map(item => ({ value: item.id, label: item.label, description: item.description })) }
-              : prompt.type === "text" ? { allowEmpty: true } : { secret: true }, prompt.signal),
+              : { allowEmpty: true, verbatim: true, secret: prompt.type !== "text" }, prompt.signal),
           };
-          await this.controller.login(provider, interaction, type);
-          if (!this.abort.signal.aborted) this.print("xloom", `${provider} 接入成功，后续请求使用新凭据；旧凭据已替换且不另存。使用 /model 选择模型。`);
+          await this.controller.login(provider.id, interaction, type);
+          if (!this.abort.signal.aborted) this.print("xloom", `${provider.name} 接入成功，后续请求使用新凭据；旧凭据已替换且不另存。使用 /model 选择模型。`);
         }
       }
     } catch {

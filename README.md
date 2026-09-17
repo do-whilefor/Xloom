@@ -54,11 +54,11 @@ npm run check
 
 ### 配置模型
 
-启动后，使用 `/login` 选择供应商及其支持的账号登录或 API Key 方式，也可以通过 `/apikey [provider]` 直接输入 key。接入后使用 `/model` 选择模型，默认统一设置聊天、Decide 和 Execute；也可以通过 `/model chat`、`/model decide`、`/model execute` 分别配置。
+认证沿用当前 Pi 的原生模式：输入 `/login`，先选择账号登录或 API Key，再选择供应商；也可以使用 `/login <供应商 ID 或名称>` 直接进入该供应商的接入流程。供应商列表中按 Esc 返回接入方式。接入后使用 `/model` 选择模型，默认统一设置聊天、Decide 和 Execute；也可以通过 `/model chat`、`/model decide`、`/model execute` 分别配置。
 
-例如 `/login openai-codex` 使用 ChatGPT 账号授权，`/apikey openai` 配置独立计费的 OpenAI API；`/login kimi-coding` 可选择账号登录或 key，智谱国内 Coding Plan 使用 `/apikey zai-coding-cn`。实际可用权益由供应商账号和接入政策决定。登录窗口支持复制授权链接、设备码和手动回调，凭据不进入聊天和命令历史。
+例如 `/login openai-codex` 使用 ChatGPT 账号授权，`/login openai` 配置独立计费的 OpenAI API；`/login kimi-coding` 可选择账号登录或 key，智谱国内 Coding Plan 使用 `/login zai-coding-cn`。实际可用权益由供应商账号和接入政策决定。登录窗口支持复制授权链接、设备码和手动回调，凭据不进入聊天和命令历史。
 
-每个供应商只保存一份当前凭据。新 key 保存成功后立即替换该供应商的旧 key 或登录凭据，后续请求使用新凭据，不保留旧 key 的历史或备份；其他供应商不受影响。新凭据写入成功前不会先删除旧凭据。使用 `/logout [provider]` 移除本地凭据，环境变量中的 key 不受此操作影响。
+每个供应商只保存一份当前凭据。新 key 保存成功后立即替换该供应商的旧 key 或登录凭据，后续请求使用新凭据，不保留旧 key 的历史或备份；其他供应商不受影响。新凭据写入成功前不会先删除旧凭据。输入 `/logout` 后选择供应商即可移除其本地凭据，环境变量和 models.json 中的配置不受此操作影响。Xloom 不再提供独立的 `/apikey` 命令，认证输入和凭据解析交给 Pi 的供应商实现处理。
 
 API Key 按供应商分别保存。例如 `opencode-go`（OpenCode Go）、`opencode`（OpenCode Zen）、`deepseek`（DeepSeek）是不同的接入入口；保存某一家的 key 不会自动配置其他入口。保存成功表示已写入本地凭据存储，实际可调用的模型和额度仍由该供应商的账户权限决定。
 

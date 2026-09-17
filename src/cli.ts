@@ -30,7 +30,7 @@ const help = `xloom — local two-agent research loop (Windows MVP)
 
 Options: --workspace PATH  --config PATH  --help
 TUI: plain text chats; /run GOAL starts a separate two-agent task
-     /model /login /apikey /logout /new /tasks /open TASK_ID /paths /start /pause /stop /hint /meta /board /help /exit
+     /model /login /logout /new /tasks /open TASK_ID /paths /start /pause /stop /hint /meta /board /help /exit
      Ctrl+O toggles details; click an activity summary to expand and its content to collapse
 User input defines authorization. No extra authorization confirmation or hooks.
 Chat and Execute have read/write/edit/powershell/chrome for the running browser.
@@ -96,7 +96,7 @@ async function main(): Promise<void> {
     const config = workspaceDefaults(values.goal!, values.scope);
     saveNewConfig(configPath, config);
     ensureGlobalSettings(config);
-    process.stdout.write(`Created ${configPath}\nStart xloom, configure a provider with /login or /apikey, then choose its model with /model. Goal completion, not a Step count, ends the loop.\n`);
+    process.stdout.write(`Created ${configPath}\nStart xloom, configure a provider with /login, then choose its model with /model. Goal completion, not a Step count, ends the loop.\n`);
     return;
   }
   if (command === "status" || command === "report") {

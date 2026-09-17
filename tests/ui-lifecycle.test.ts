@@ -29,7 +29,7 @@ function fixture(runner: NonNullable<AppOptions["runner"]>) {
   const options: AppOptions = { runner,
     chat: { async send() { return { input: 0, output: 0, cost: 0 }; }, reset() {} },
     settings: { async listModels() { return []; }, async listProviders() { return []; },
-      async saveApiKey() {}, async login() {}, async logout() {} },
+      async login() {}, async logout() {} },
   };
   const apps: AppController[] = [];
   const open = () => { const app = new AppController(root, configPath, config, options); apps.push(app); return app; };

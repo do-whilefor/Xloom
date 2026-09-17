@@ -18,6 +18,9 @@ const createRuntime = async (signal?: AbortSignal) => {
   configure?.(runtime);
   return runtime;
 };
+const apiLogin = (settings: SettingsService, provider: string, key: string, signal?: AbortSignal) => settings.login(provider, {
+  signal, notify() {}, prompt: async prompt => prompt.type === "select" ? "bearer-token" : key,
+}, "api_key");
 const interaction = (): AuthInteraction => ({ prompt: vi.fn(async () => "test-code"), notify: vi.fn() });
 
 beforeEach(async () => {
@@ -85,7 +88,7 @@ describe("Pi settings service", () => {
   });
 
   it("lists only configured providers without resolving credentials or contacting the network", async () => {
-    await service.saveApiKey("opencode-go", "test-settings-key");
+    await apiLogin(service, "opencode-go", "test-settings-key");
     let getAuth!: ReturnType<typeof vi.spyOn>;
     configure = (runtime) => { getAuth = vi.spyOn(runtime, "getAuth"); };
     const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("Catalog must stay local"));
@@ -99,7 +102,7 @@ describe("Pi settings service", () => {
 
   it("refreshes selectable models after saving and removing keys for distinct providers", async () => {
     for (const provider of ["opencode-go", "opencode", "deepseek"]) {
-      await service.saveApiKey(provider, `synthetic-${provider}-key`);
+      await apiLogin(service, provider, `synthetic-${provider}-key`);
       expect((await service.listModels()).some(model => model.provider === provider)).toBe(true);
     }
     await service.logout("opencode");
@@ -125,18 +128,18 @@ describe("Pi settings service", () => {
   });
 
   it("does not offer a model whose explicit key override is missing even when its provider has a stored key", async () => {
-    await service.saveApiKey("anthropic", "test-settings-key");
+    await apiLogin(service, "anthropic", "test-settings-key");
     vi.stubEnv("MISSING_MODEL_KEY", undefined);
     const config = { provider: "anthropic", model: "claude-sonnet-4-6", apiKeyEnv: "MISSING_MODEL_KEY" };
     expect((await service.listModels([config])).some(model => model.provider === config.provider && model.model === config.model)).toBe(false);
     expect((await service.listModels()).some(model => model.provider === config.provider && model.model === config.model)).toBe(true);
   });
 
-  it.each(["opencode-go", "opencode", "deepseek", "anthropic", "openai", "google", "amazon-bedrock"])("uses the %s key saved by /apikey when resolving a selected model in a fresh runtime", async provider => {
+  it.each(["opencode-go", "opencode", "deepseek", "anthropic", "openai", "google", "amazon-bedrock"])("uses the %s key saved by /login when resolving a selected model in a fresh runtime", async provider => {
     vi.stubEnv("XLOOM_HOME", directory);
     const settings = new SettingsService();
     const key = `synthetic-${provider}-key`;
-    await settings.saveApiKey(provider, key);
+    await apiLogin(settings, provider, key);
     const choice = (await settings.listModels()).find(model => model.provider === provider)!;
     expect(choice).toBeDefined();
     const selected = await resolveModel(choice, new AbortController().signal);
@@ -156,45 +159,44 @@ describe("Pi settings service", () => {
     expect(choices).toContainEqual({ provider: "local", model: "custom-model", name: "custom-model" });
   });
 
-  it("lists only interactive auth methods; subscription login is oauth", async () => {
+  it("lists native auth methods including ambient setup; subscription login is oauth", async () => {
     const providers = await service.listProviders();
     expect(providers).toContainEqual({ id: "opencode-go", name: "OpenCode Go", authTypes: ["api_key"], stored: false });
     expect(providers.find((provider) => provider.id === "anthropic")?.authTypes).toEqual(["api_key", "oauth"]);
     expect(providers.find(provider => provider.id === "openai-codex")?.authTypes).toEqual(["oauth"]);
     expect(providers.find(provider => provider.id === "kimi-coding")?.authTypes).toEqual(["api_key", "oauth"]);
-    expect(providers.every((provider) => Object.keys(provider).sort().join() === "authTypes,id,name,stored")).toBe(true);
+    expect(providers.map(provider => provider.name)).toEqual(providers.map(provider => provider.name).sort((a, b) => a.localeCompare(b)));
   });
 
   it("persists API keys through real Pi login while retaining other provider credentials", async () => {
     await writeFile(join(directory, "auth.json"), JSON.stringify({ "other-provider": unrelated }));
-    await service.saveApiKey("opencode-go", "test-settings-key");
+    await apiLogin(service, "opencode-go", "test-settings-key");
     expect(await readAuth()).toEqual({ "other-provider": unrelated, "opencode-go": { type: "api_key", key: "test-settings-key" } });
     const fresh = await createRuntime();
     expect((await fresh.getAuth("opencode-go"))?.auth.apiKey).toBe("test-settings-key");
   });
 
-  it("stores pasted dollar signs and leading exclamation marks as literal keys, not Pi commands", async () => {
-    const key = "!test-${NOT_A_REAL_TOKEN_ENV}-$value-$$";
-    await service.saveApiKey("opencode-go", key);
-    expect((await readAuth())["opencode-go"].key).toBe("$!test-$${NOT_A_REAL_TOKEN_ENV}-$$value-$$$$");
-    expect((await (await createRuntime()).getAuth("opencode-go"))?.auth.apiKey).toBe(key);
+  it("preserves Pi credential expressions without custom key rewriting", async () => {
+    vi.stubEnv("XLOOM_TEST_NATIVE_KEY", "resolved-native-key");
+    await apiLogin(service, "opencode-go", "${XLOOM_TEST_NATIVE_KEY}");
+    expect((await readAuth())["opencode-go"].key).toBe("${XLOOM_TEST_NATIVE_KEY}");
+    expect((await (await createRuntime()).getAuth("opencode-go"))?.auth.apiKey).toBe("resolved-native-key");
   });
 
   it("replaces only the selected provider credential on API-key save", async () => {
     await writeFile(join(directory, "auth.json"), JSON.stringify({ anthropic: unrelated, "opencode-go": { type: "api_key", key: "old-test-key" } }));
-    await service.saveApiKey("opencode-go", "new-test-key");
+    await apiLogin(service, "opencode-go", "new-test-key");
     expect((await readAuth()).anthropic).toEqual(unrelated);
     expect((await readAuth())["opencode-go"].key).toBe("new-test-key");
   });
 
-  it.each(["apikey", "login"])("replaces the old key without backups and reuses the new key in existing and fresh runtimes through /%s", async command => {
+  it("replaces the old key without backups and reuses the new key in existing and fresh runtimes through /login", async () => {
     vi.stubEnv("OPENCODE_API_KEY", "OLD_AMBIENT_KEY");
     await writeFile(join(directory, "auth.json"), JSON.stringify({ anthropic: unrelated,
       "opencode-go": { type: "api_key", key: "OLD_PERSISTED_KEY" } }));
     const existing = await createRuntime();
     expect((await existing.getAuth("opencode-go"))?.auth.apiKey).toBe("OLD_PERSISTED_KEY");
-    if (command === "apikey") await service.saveApiKey("opencode-go", "NEW_PERSISTED_KEY");
-    else await service.login("opencode-go", { ...interaction(), prompt: async () => "NEW_PERSISTED_KEY" }, "api_key");
+    await service.login("opencode-go", { ...interaction(), prompt: async () => "NEW_PERSISTED_KEY" }, "api_key");
     expect(await readAuth()).toEqual({ anthropic: unrelated, "opencode-go": { type: "api_key", key: "NEW_PERSISTED_KEY" } });
     expect(await readdir(directory)).toEqual(["auth.json"]);
     expect((await existing.getAuth("opencode-go"))?.auth.apiKey).toBe("NEW_PERSISTED_KEY");
@@ -209,20 +211,20 @@ describe("Pi settings service", () => {
     expect(await readdir(directory)).toEqual(["auth.json"]);
   });
 
-  it("supports provider-owned API-key options while treating pasted key expressions as literals", async () => {
-    const key = "!literal-${NOT_A_REAL_TOKEN_ENV}";
+  it("supports the native provider-owned API-key options", async () => {
+    const key = "native-bedrock-key";
     const prompt = vi.fn(async (prompt: { type: string }) => prompt.type === "select" ? "bearer-token" : key);
     await service.login("amazon-bedrock", { ...interaction(), prompt }, "api_key");
     expect(prompt.mock.calls.map(([prompt]) => prompt.type)).toEqual(["select", "secret"]);
     expect((await (await createRuntime()).getAuth("amazon-bedrock"))?.auth.apiKey).toBe(key);
   });
 
-  it.each(["cancelled", "invalid"])("retains the old key when replacement is %s before persistence", async outcome => {
-    await service.saveApiKey("opencode-go", "old-retained-key");
+  it.each(["cancelled", "failed"])("retains the old key when replacement is %s before persistence", async outcome => {
+    await apiLogin(service, "opencode-go", "old-retained-key");
     const control = new AbortController();
     await expect(service.login("opencode-go", { ...interaction(), signal: control.signal, prompt: async () => {
       if (outcome === "cancelled") control.abort();
-      return "invalid\nkey";
+      throw new Error("provider cancelled or failed");
     } }, "api_key")).rejects.toThrow();
     expect((await readAuth())["opencode-go"]).toEqual({ type: "api_key", key: "old-retained-key" });
   });
@@ -267,26 +269,45 @@ describe("Pi settings service", () => {
     expect(process.env.OPENCODE_API_KEY).toBe("ambient-test-key");
   });
 
-  it.each(["", "  ", "fake\nkey", "fake\rkey", "fake\u0000key"])("rejects an empty or multiline key before runtime creation", async (key) => {
-    const factory = vi.fn(createRuntime);
-    await expect(new SettingsService(factory).saveApiKey("opencode-go", key)).rejects.toThrow("single-line API key");
-    expect(factory).not.toHaveBeenCalled();
-  });
-
-  it("does not send a key into unexpected prompts or repeat it for provider configuration", async () => {
-    configure = (runtime) => {
-      vi.spyOn(runtime.getProvider("opencode-go")!.auth.apiKey!, "login").mockImplementation(async (passed) => {
-        expect(await passed.prompt({ type: "secret", message: "API key" })).toBe("test-key");
-        await passed.prompt({ type: "text", message: "Account id" });
-        throw new Error("unreachable");
+  it("passes API-key interactions to Pi unchanged, including provider-owned additional prompts", async () => {
+    const callbacks = interaction();
+    callbacks.prompt = vi.fn(async prompt => prompt.type === "secret" ? "  ${NATIVE_KEY}  " : "account-id");
+    configure = runtime => {
+      vi.spyOn(runtime.getProvider("opencode-go")!.auth.apiKey!, "login").mockImplementation(async passed => {
+        expect(await passed.prompt({ type: "secret", message: "API key" })).toBe("  ${NATIVE_KEY}  ");
+        expect(await passed.prompt({ type: "text", message: "Account id" })).toBe("account-id");
+        return { type: "api_key", key: "provider-result" };
+      });
+      const login = runtime.login.bind(runtime);
+      vi.spyOn(runtime, "login").mockImplementation(async (provider, type, interaction) => {
+        expect(interaction).toBe(callbacks);
+        await login(provider, type, interaction);
       });
     };
-    await expect(service.saveApiKey("opencode-go", "test-key")).rejects.toThrow("additional setup");
-    expect((await readAuth())["opencode-go"]).toBeUndefined();
+    await service.login("opencode-go", callbacks, "api_key");
+    expect((await readAuth())["opencode-go"].key).toBe("provider-result");
+  });
+
+  it("lists stored credentials for logout even when their provider no longer exists", async () => {
+    vi.stubEnv("DEEPSEEK_API_KEY", "ambient-only-key");
+    await writeFile(join(directory, "auth.json"), JSON.stringify({ "removed-provider": unrelated }));
+    expect(await service.listProviders("logout")).toEqual([{ id: "removed-provider", name: "removed-provider", authTypes: ["oauth"], stored: true }]);
+  });
+
+  it("exposes native ambient setup and provider-specific login labels", async () => {
+    configure = runtime => {
+      const providers = runtime.getProviders().map(provider => provider.id === "openai"
+        ? { ...provider, auth: { ...provider.auth, apiKey: { ...provider.auth.apiKey!, login: undefined } } }
+        : provider.id === "anthropic" ? { ...provider, auth: { ...provider.auth, oauth: { ...provider.auth.oauth!, loginLabel: "Native account label" } } } : provider);
+      vi.spyOn(runtime, "getProviders").mockReturnValue(providers);
+    };
+    const providers = await service.listProviders();
+    expect(providers.find(provider => provider.id === "openai")).toMatchObject({ authTypes: ["api_key"], ambientAuth: expect.any(String) });
+    expect(providers.find(provider => provider.id === "anthropic")?.oauthLabel).toBe("Native account label");
   });
 
   it("does not echo arbitrary provider names for unsupported credential setup", async () => {
-    await expect(service.saveApiKey("fake-secret-provider-id", "test-key")).rejects.toThrow("This Xloom provider does not support API-key setup; use /login to select a supported authentication method.");
+    await expect(apiLogin(service, "fake-secret-provider-id", "test-key")).rejects.toThrow("This Xloom provider does not support the requested authentication method; use /login to select a supported method.");
     await expect(service.login("fake-secret-provider-id", interaction())).rejects.not.toThrow("fake-secret-provider-id");
   });
 
@@ -303,7 +324,7 @@ describe("Pi settings service", () => {
       vi.spyOn(runtime, "login").mockRejectedValue(new Error("secret-provider-response"));
       vi.spyOn(runtime, "logout").mockRejectedValue(new Error("secret-provider-response"));
     };
-    for (const operation of [() => service.saveApiKey("opencode-go", "test-key"), () => service.login("anthropic", interaction()), () => service.logout("opencode-go")]) {
+    for (const operation of [() => apiLogin(service, "opencode-go", "test-key"), () => service.login("anthropic", interaction()), () => service.logout("opencode-go")]) {
       const error = await operation().catch((value) => value as Error);
       expect(String(error)).not.toContain("secret-provider-response");
       expect(String(error)).toContain("Xloom");
@@ -315,7 +336,7 @@ describe("Pi settings service", () => {
   it("sanitizes cancellation reasons and avoids starting an already-cancelled login", async () => {
     const controller = new AbortController(); controller.abort("secret-cancellation-reason");
     const factory = vi.fn(createRuntime); const cancelled = new SettingsService(factory);
-    await expect(cancelled.saveApiKey("opencode-go", "test-key", controller.signal)).rejects.toMatchObject({ name: "AbortError", message: "Credential operation cancelled." });
+    await expect(apiLogin(cancelled, "opencode-go", "test-key", controller.signal)).rejects.toMatchObject({ name: "AbortError", message: "Credential operation cancelled." });
     await expect(cancelled.login("anthropic", { ...interaction(), signal: controller.signal })).rejects.not.toThrow("secret-cancellation-reason");
     expect(factory).not.toHaveBeenCalled();
   });
@@ -345,7 +366,7 @@ describe("Pi settings service", () => {
     configure = (runtime) => {
       vi.spyOn(runtime, "login").mockRejectedValue(new CredentialSynchronizationError("opencode-go", "login", { type: "api_key", key: "secret-saved-key" }, { cause: new Error("secret-sync-error") }));
     };
-    await expect(service.saveApiKey("opencode-go", "test-key")).rejects.toThrow("credential was saved");
-    await expect(service.saveApiKey("opencode-go", "test-key")).rejects.not.toThrow("secret-");
+    await expect(apiLogin(service, "opencode-go", "test-key")).rejects.toThrow("Credentials were saved");
+    await expect(apiLogin(service, "opencode-go", "test-key")).rejects.not.toThrow("secret-");
   });
 });
