@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "models": {
+    "chat": { "provider": "opencode-go", "model": "deepseek-v4-flash", "thinking": "high" },
+    "decide": { "provider": "opencode-go", "model": "deepseek-v4-flash", "thinking": "max" },
+    "execute": { "provider": "opencode-go", "model": "deepseek-v4-flash", "thinking": "high" }
+  },
+  "limits": {
+    "maxNoProgress": 3,
+    "maxMinutes": null,
+    "maxTokens": null,
+    "maxCost": null,
+    "maxTurnsPerRun": null,
+    "stepTimeoutSeconds": null,
+    "metacogEvery": 3
+  },
+  "chrome": { "enabled": true, "channel": "stable" }
+}

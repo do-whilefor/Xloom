@@ -40,7 +40,7 @@ export class AppController {
   private cancellation?: AbortController;
   private mode: "chat" | "run" = "chat";
   private activeRole: AgentRole = "decide";
-  private displayInfo?: { key: string; value: ModelDisplayInfo };
+  private displayInfo?: { key: string; value: ModelDisplayInfo | null };
   private displayRequest?: AbortController;
   private displayKey?: string;
   private chatUsage: Usage = { input: 0, output: 0, cost: 0 };
@@ -98,13 +98,21 @@ export class AppController {
       if (this.closed || request.signal.aborted || this.displayRequest !== request) return;
       this.displayInfo = { key, value };
       this.emit({ type: "session" });
-    }).catch(() => { /* Header metadata is optional; failures must not prevent chat or task execution. */ });
+    }).catch(() => {
+      if (this.closed || request.signal.aborted || this.displayRequest !== request) return;
+      this.displayInfo = { key, value: null };
+      this.emit({ type: "session" });
+    });
   }
   getSessionInfo() {
     const selected = this.selectedModel();
     const display = this.displayInfo?.key === JSON.stringify(selected) ? this.displayInfo.value : undefined;
-    return { mode: this.mode, busy: !!this.active, model: `${selected.provider}/${selected.model}`, modelName: selected.model,
-      workspace: this.workspace, contextWindow: selected.contextWindow ?? display?.contextWindow, authLabel: display?.authLabel,
+    const placeholder = !this.settings.describeModel ? undefined
+      : display === undefined ? "正在读取模型"
+      : display === null ? "模型状态未知"
+      : display.configured ? undefined : "未配置模型";
+    return { mode: this.mode, busy: !!this.active, model: placeholder ?? `${selected.provider}/${selected.model}`, modelName: placeholder ?? selected.model,
+      workspace: this.workspace, contextWindow: placeholder ? undefined : selected.contextWindow ?? display?.contextWindow, authLabel: placeholder ? undefined : display?.authLabel,
       status: this.mode === "chat" ? this.chatStatus : this.store?.snapshot().status ?? "idle", usage: this.mode === "chat" ? { ...this.chatUsage } : this.store?.snapshot().usage };
   }
   subscribe(listener: (event: LoopEvent) => void): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener); }

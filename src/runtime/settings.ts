@@ -10,7 +10,7 @@ export type SettingsRuntimeFactory = (signal?: AbortSignal) => Promise<SettingsR
 
 export interface ModelChoice { provider: string; model: string; name: string }
 export interface ProviderChoice { id: string; name: string; authTypes: string[]; stored?: boolean; oauthLabel?: string; ambientAuth?: string }
-export interface ModelDisplayInfo { contextWindow?: number; authLabel?: string }
+export interface ModelDisplayInfo { configured: boolean; contextWindow?: number; authLabel?: string }
 
 const createRuntime: SettingsRuntimeFactory = (signal) => ModelRuntime.create({ ...modelRuntimePaths(), allowModelNetwork: false, signal });
 
@@ -66,11 +66,13 @@ export class SettingsService {
       const model = runtime.getModel(config.provider, config.model);
       const contextWindow = config.contextWindow ?? model?.contextWindow;
       const status = runtime.getProviderAuthStatus(config.provider);
+      const authenticated = config.apiKeyEnv ? Boolean(process.env[config.apiKeyEnv]) : status.configured;
+      const configured = authenticated && Boolean(model || (config.api && config.baseUrl));
       const authLabel = config.apiKeyEnv ? process.env[config.apiKeyEnv] ? "API Key" : "未配置认证"
         : runtime.isUsingSubscription(config.provider) ? "Subscription"
         : runtime.isUsingOAuth(config.provider) ? "OAuth"
         : status.configured ? "API Key" : "未配置认证";
-      return { ...(Number.isSafeInteger(contextWindow) && contextWindow! > 0 ? { contextWindow } : {}), authLabel };
+      return { configured, ...(Number.isSafeInteger(contextWindow) && contextWindow! > 0 ? { contextWindow } : {}), authLabel };
     } catch {
       checkCancellation(signal);
       throw new Error("Xloom model display metadata could not be read.");
