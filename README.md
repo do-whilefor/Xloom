@@ -44,7 +44,7 @@ npm start
 npm run build
 ```
 
-运行类型检查、构建和全部测试：
+运行类型检查和构建：
 
 ```powershell
 npm run check

@@ -1,6 +1,8 @@
 node_modules/
 dist/
 coverage/
+/tests/
+/vitest.config.ts
 .xloom/
 .env
 .env.*

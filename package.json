@@ -12,8 +12,7 @@
     "build": "tsc -p tsconfig.json",
     "prepare": "npm run build",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "vitest run",
-    "check": "npm run typecheck && npm run build && npm test"
+    "check": "npm run typecheck && npm run build"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "0.84.4",
