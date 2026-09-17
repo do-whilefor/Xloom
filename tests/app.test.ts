@@ -424,6 +424,17 @@ describe("application model settings", () => {
     expect(readFileSync(test.configPath, "utf8")).toBe(before);
   });
 
+  it("does not reinsert an unauthenticated current model into the chooser or save it as a selection", async () => {
+    const test = setup();
+    test.settings.listModels.mockResolvedValue([]);
+    const current = test.config.models.execute;
+    const before = readFileSync(test.configPath, "utf8");
+    expect(await test.app.getModels()).toEqual([]);
+    await expect(test.app.selectModel(current.provider, current.model)).rejects.toThrow(/apikey/);
+    expect(readFileSync(test.configPath, "utf8")).toBe(before);
+    expect(test.chat.reset).not.toHaveBeenCalled();
+  });
+
   it("passes a secret only to Pi settings, never the model, config or events", async () => {
     const test = setup(); await test.app.selectModel("fixture", "model-a");
     const key = "TEST_SECRET_NOT_A_REAL_KEY";
@@ -495,11 +506,24 @@ describe("application model settings", () => {
     const test = setup(); await test.app.close();
     const alias = { provider: "fixture-inline", model: "private-alias", api: "anthropic-messages", baseUrl: "https://fixture.invalid/api", apiKeyEnv: "ALIAS_KEY_ENV", maxTokens: 2048 };
     test.config.models.execute = alias;
+    test.settings.listModels.mockResolvedValue([{ provider: alias.provider, model: alias.model, name: alias.model }]);
     const app = new AppController(test.root, test.configPath, test.config, { settings: test.settings, chat: test.chat }); apps.push(app);
     expect(await app.getModels()).toContainEqual({ provider: alias.provider, model: alias.model, name: alias.model });
+    expect(test.settings.listModels).toHaveBeenCalledWith(expect.arrayContaining([alias]));
     await app.selectModel(alias.provider, alias.model, "all");
     expect(loadConfig(test.configPath).models).toEqual({ chat: alias, decide: alias, execute: alias });
     expect((await app.getModels()).filter(model => model.provider === alias.provider && model.model === alias.model)).toHaveLength(1);
+  });
+
+  it("retains the explicit credential override that makes a catalog model selectable", async () => {
+    const test = setup(); await test.app.close();
+    const selected = { provider: "fixture", model: "model-a", apiKeyEnv: "MODEL_KEY_ENV" };
+    test.config.models.execute = selected;
+    const app = new AppController(test.root, test.configPath, test.config, { settings: test.settings, chat: test.chat }); apps.push(app);
+    await app.selectModel(selected.provider, selected.model);
+    expect(loadConfig(test.configPath).models).toEqual({ chat: selected, decide: selected, execute: selected });
+    await app.chat("Use the selected provider credential");
+    expect(test.chatRequests[0]?.model).toEqual(selected);
   });
 
   it.each(["model", "apikey", "logout"] as const)("does not start an already-cancelled %s setting operation", async kind => {

@@ -5,7 +5,7 @@ import { modelRuntimePaths } from "./storage.js";
 
 export type { AuthEvent, AuthInteraction, AuthPrompt } from "@earendil-works/pi-ai";
 
-export type SettingsRuntime = Pick<ModelRuntime, "getError" | "getModels" | "getModel" | "getProviders" | "getProvider" | "getProviderAuthStatus" | "isUsingOAuth" | "isUsingSubscription" | "login" | "logout">;
+export type SettingsRuntime = Pick<ModelRuntime, "getError" | "getAvailableSnapshot" | "getModel" | "getProviders" | "getProvider" | "getProviderAuthStatus" | "isUsingOAuth" | "isUsingSubscription" | "login" | "logout">;
 export type SettingsRuntimeFactory = (signal?: AbortSignal) => Promise<SettingsRuntime>;
 
 export interface ModelChoice { provider: string; model: string; name: string }
@@ -42,10 +42,23 @@ export class SettingsService {
     }
   }
 
-  async listModels(): Promise<ModelChoice[]> {
+  async listModels(configured: readonly ModelConfig[] = []): Promise<ModelChoice[]> {
     const runtime = await this.runtime();
     try {
-      return runtime.getModels().map(({ provider, id, name }) => ({ provider, model: id, name }))
+      // Pi's availability snapshot checks local auth without resolving keys or calling providers.
+      const choices = new Map(runtime.getAvailableSnapshot().map(({ provider, id, name }) =>
+        [`${provider}\0${id}`, { provider, model: id, name }]));
+      for (const config of configured) {
+        const registered = runtime.getModel(config.provider, config.model);
+        const authenticated = config.apiKeyEnv ? Boolean(process.env[config.apiKeyEnv]) : runtime.getProviderAuthStatus(config.provider).configured;
+        const identity = `${config.provider}\0${config.model}`;
+        // Inline endpoints and explicit environment keys are Xloom overrides, not Pi catalog entries.
+        if ((config.api || config.baseUrl || config.apiKeyEnv) && !authenticated) choices.delete(identity);
+        if (authenticated && (registered || (config.api && config.baseUrl))) {
+          choices.set(identity, { provider: config.provider, model: config.model, name: registered?.name ?? config.model });
+        }
+      }
+      return [...choices.values()]
         .sort((a, b) => a.provider.localeCompare(b.provider) || a.model.localeCompare(b.model));
     } catch {
       throw new Error("Pi model catalog could not be read.");
@@ -99,6 +112,8 @@ export class SettingsService {
         prompt: async (prompt) => {
           checkCancellation(signal);
           checkCancellation(prompt.signal);
+          // /apikey supplies a Bedrock bearer token, so no AWS-profile prompt is needed.
+          if (provider === "amazon-bedrock" && !supplied && prompt.type === "select" && prompt.options.some(option => option.id === "bearer-token")) return "bearer-token";
           if (prompt.type !== "secret" || supplied) {
             needsMoreInput = true;
             throw new Error("Additional provider configuration required.");

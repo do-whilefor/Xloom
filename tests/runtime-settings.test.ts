@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { InMemoryModelsStore, type AuthInteraction, type Credential } from "@earendil-works/pi-ai";
 import { CredentialSynchronizationError, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { SettingsService, type SettingsRuntime } from "../src/runtime/settings.js";
+import { resolveModel } from "../src/runtime/models.js";
 
 let directory: string;
 let service: SettingsService;
@@ -13,7 +14,7 @@ const unrelated: Credential = { type: "oauth", access: "unrelated-test-access", 
 const readAuth = async () => JSON.parse(await readFile(join(directory, "auth.json"), "utf8"));
 const createRuntime = async (signal?: AbortSignal) => {
   const runtime = await ModelRuntime.create({ authPath: join(directory, "auth.json"), modelsPath: null,
-    modelsStore: new InMemoryModelsStore(), refreshOnCreate: false, allowModelNetwork: false, signal });
+    modelsStore: new InMemoryModelsStore(), allowModelNetwork: false, signal });
   configure?.(runtime);
   return runtime;
 };
@@ -22,7 +23,9 @@ const interaction = (): AuthInteraction => ({ prompt: vi.fn(async () => "test-co
 beforeEach(async () => {
   directory = await mkdtemp(join(tmpdir(), "xloom-settings-test-"));
   vi.stubEnv("PI_CODING_AGENT_DIR", directory);
-  for (const name of ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_OAUTH_TOKEN", "OPENCODE_API_KEY"]) vi.stubEnv(name, undefined);
+  for (const name of ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_OAUTH_TOKEN", "OPENCODE_API_KEY", "DEEPSEEK_API_KEY",
+    "AWS_BEARER_TOKEN_BEDROCK", "AWS_PROFILE", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+    "AWS_CONTAINER_CREDENTIALS_FULL_URI", "AWS_WEB_IDENTITY_TOKEN_FILE"]) vi.stubEnv(name, undefined);
   configure = undefined;
   service = new SettingsService(createRuntime);
 });
@@ -81,13 +84,76 @@ describe("Pi settings service", () => {
     await expect(invalid.describeModel({ provider: "anthropic", model: "missing" })).rejects.not.toThrow("secret-runtime-value");
   });
 
-  it("lists local model choices without headers, credentials, or auth resolution", async () => {
+  it("lists only configured providers without resolving credentials or contacting the network", async () => {
+    await service.saveApiKey("opencode-go", "test-settings-key");
     let getAuth!: ReturnType<typeof vi.spyOn>;
     configure = (runtime) => { getAuth = vi.spyOn(runtime, "getAuth"); };
+    const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("Catalog must stay local"));
     const choices = await service.listModels();
     expect(choices).toContainEqual({ provider: "opencode-go", model: "deepseek-v4-flash", name: expect.any(String) });
+    expect(choices.some(model => ["opencode", "amazon-bedrock", "deepseek"].includes(model.provider))).toBe(false);
     expect(Object.keys(choices[0]).sort()).toEqual(["model", "name", "provider"]);
     expect(getAuth).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("refreshes selectable models after saving and removing keys for distinct providers", async () => {
+    for (const provider of ["opencode-go", "opencode", "deepseek"]) {
+      await service.saveApiKey(provider, `synthetic-${provider}-key`);
+      expect((await service.listModels()).some(model => model.provider === provider)).toBe(true);
+    }
+    await service.logout("opencode");
+    const models = await service.listModels();
+    expect(models.some(model => model.provider === "opencode")).toBe(false);
+    expect(models.some(model => model.provider === "opencode-go")).toBe(true);
+    expect(models.some(model => model.provider === "deepseek")).toBe(true);
+  });
+
+  it("includes authenticated inline aliases and explicit environment models, but not unauthenticated defaults", async () => {
+    vi.stubEnv("ALIAS_KEY_ENV", "synthetic-alias-key");
+    const alias = { provider: "fixture-inline", model: "private-alias", api: "anthropic-messages", baseUrl: "https://fixture.invalid/api", apiKeyEnv: "ALIAS_KEY_ENV" };
+    const choices = await service.listModels([
+      alias,
+      { provider: "anthropic", model: "claude-sonnet-4-6", apiKeyEnv: "ALIAS_KEY_ENV" },
+      { provider: "amazon-bedrock", model: "minimax.minimax-m2.5" },
+      { ...alias, model: "missing-key", apiKeyEnv: "MISSING_ALIAS_KEY_ENV" },
+      { ...alias, model: "missing-endpoint", baseUrl: undefined },
+    ]);
+    expect(choices).toContainEqual({ provider: alias.provider, model: alias.model, name: alias.model });
+    expect(choices).toContainEqual({ provider: "anthropic", model: "claude-sonnet-4-6", name: expect.any(String) });
+    expect(choices.some(model => ["minimax.minimax-m2.5", "missing-key", "missing-endpoint"].includes(model.model))).toBe(false);
+  });
+
+  it("does not offer a model whose explicit key override is missing even when its provider has a stored key", async () => {
+    await service.saveApiKey("anthropic", "test-settings-key");
+    vi.stubEnv("MISSING_MODEL_KEY", undefined);
+    const config = { provider: "anthropic", model: "claude-sonnet-4-6", apiKeyEnv: "MISSING_MODEL_KEY" };
+    expect((await service.listModels([config])).some(model => model.provider === config.provider && model.model === config.model)).toBe(false);
+    expect((await service.listModels()).some(model => model.provider === config.provider && model.model === config.model)).toBe(true);
+  });
+
+  it.each(["opencode-go", "opencode", "deepseek", "anthropic", "openai", "google", "amazon-bedrock"])("uses the %s key saved by /apikey when resolving a selected model in a fresh runtime", async provider => {
+    vi.stubEnv("XLOOM_HOME", directory);
+    const settings = new SettingsService();
+    const key = `synthetic-${provider}-key`;
+    await settings.saveApiKey(provider, key);
+    const choice = (await settings.listModels()).find(model => model.provider === provider)!;
+    expect(choice).toBeDefined();
+    const selected = await resolveModel(choice, new AbortController().signal);
+    expect(selected.model).toMatchObject({ provider, id: choice.model });
+    expect(selected.secrets).toContain(key);
+  });
+
+  it("keeps environment credentials and command-backed Pi models available without executing the command", async () => {
+    vi.stubEnv("DEEPSEEK_API_KEY", "synthetic-env-key");
+    const modelsPath = join(directory, "models.json");
+    await writeFile(modelsPath, JSON.stringify({ providers: { local: { api: "openai-completions", baseUrl: "https://fixture.invalid/v1",
+      apiKey: "!must-not-execute-this-key-command", models: [{ id: "custom-model" }] } } }));
+    const local = new SettingsService(signal => ModelRuntime.create({ authPath: join(directory, "auth.json"), modelsPath,
+      modelsStore: new InMemoryModelsStore(), allowModelNetwork: false, signal }));
+    const choices = await local.listModels();
+    expect(choices.some(model => model.provider === "deepseek")).toBe(true);
+    expect(choices).toContainEqual({ provider: "local", model: "custom-model", name: "custom-model" });
   });
 
   it("lists only interactive auth methods; subscription login is oauth", async () => {

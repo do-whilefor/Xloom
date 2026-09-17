@@ -54,7 +54,9 @@ npm run check
 
 ### 配置模型
 
-启动后，输入 `/model` 选择供应商和模型，再使用 `/apikey` 在私密输入框中设置对应的 API Key。聊天、Decide 和 Execute 可以分别配置模型；`/model all` 可统一设置。
+启动后，先输入 `/apikey` 选择供应商并在私密输入框中保存 API Key，再使用 `/model` 选择已接入供应商的模型。`/model` 默认统一设置聊天、Decide 和 Execute；也可以通过 `/model chat`、`/model decide`、`/model execute` 分别配置。
+
+API Key 按供应商分别保存。例如 `opencode-go`（OpenCode Go）、`opencode`（OpenCode Zen）、`deepseek`（DeepSeek）是不同的接入入口；保存某一家的 key 不会自动配置其他入口。保存成功表示已写入本地凭据存储，实际可调用的模型和额度仍由该供应商的账户权限决定。
 
 配置与运行数据默认保存在用户目录的 `~/.xloom/` 中。使用 `/paths` 查看实际位置，或将环境变量 `XLOOM_HOME` 设为其他数据目录的绝对路径。
 

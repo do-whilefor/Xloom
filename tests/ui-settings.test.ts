@@ -476,6 +476,16 @@ describe("Claude-style response timeline", () => {
 });
 
 describe("Pi-style model and credential dialogs", () => {
+  it("directs users to /apikey when no authenticated models are available", async () => {
+    const app = launch();
+    app.controller.getModels.mockResolvedValue([]);
+    app.submit("/model");
+    await vi.waitFor(() => expect(app.tui.hasOverlay()).toBe(false));
+    app.tui.renderNow(true);
+    expect(plainText(app.terminal.output)).toContain("请先使用 /apikey");
+    expect(app.controller.selectModel).not.toHaveBeenCalled();
+  });
+
   it("searches the full model/provider name and switches the selected role", async () => {
     const app = launch();
     app.submit("/model decide");
@@ -501,6 +511,9 @@ describe("Pi-style model and credential dialogs", () => {
     app.terminal.input("\r");
     await vi.waitFor(() => expect(app.controller.saveApiKey).toHaveBeenCalledWith("opencode-go", "PRIVATE_TEST_KEY", expect.any(AbortSignal)));
     await vi.waitFor(() => expect(app.tui.hasOverlay()).toBe(false));
+    app.tui.renderNow(true);
+    expect(plainText(app.terminal.output)).toContain("opencode-go 的 API Key 已保存");
+    expect(plainText(app.terminal.output)).toContain("/model");
     app.terminal.input("\x1b[A");
     expect(app.editor.getExpandedText()).toBe("/board");
     expect(app.controller.chat).not.toHaveBeenCalled();

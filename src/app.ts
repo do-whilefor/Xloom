@@ -231,11 +231,7 @@ export class AppController {
   }
 
   async getModels() {
-    const models = await this.settings.listModels();
-    for (const configured of Object.values(this.config.models)) {
-      if (configured && !models.some(model => model.provider === configured.provider && model.model === configured.model)) models.push({ provider: configured.provider, model: configured.model, name: configured.model });
-    }
-    return models;
+    return this.settings.listModels(Object.values(this.config.models).filter((model): model is ModelConfig => Boolean(model)));
   }
   getProviders() { return this.settings.listProviders(); }
   private persistModels(models: ProjectConfig["models"]): void {
@@ -257,11 +253,11 @@ export class AppController {
     return this.perform(this.mode, async signal => {
       const models = await this.getModels();
       signal.throwIfAborted();
-      if (!models.some(item => item.provider === provider && item.model === model)) throw new Error("模型不在 Pi 当前目录中。请检查 provider/model 或 Pi models.json。");
+      if (!models.some(item => item.provider === provider && item.model === model)) throw new Error("模型不在 Pi 已接入目录中。请先使用 /apikey 配置对应供应商，再使用 /model 选择模型。");
       const next = structuredClone(this.config.models);
-      // Keep the endpoint of an explicitly configured alias; built-in choices
+      // Keep this model's explicit endpoint/credential overrides; other choices
       // use Pi defaults instead of inheriting another model's endpoint/limits.
-      const configured = Object.values(this.config.models).find(item => item?.provider === provider && item.model === model && (item.api || item.baseUrl));
+      const configured = Object.values(this.config.models).find(item => item?.provider === provider && item.model === model && (item.api || item.baseUrl || item.apiKeyEnv));
       for (const target of role === "all" ? ["chat", "decide", "execute"] as const : [role]) next[target] = configured ? { ...configured } : { provider, model };
       this.persistModels(next);
     }, signal);

@@ -139,7 +139,7 @@ export const resolveModel: ModelResolver = async (config, signal) => {
     contextWindow: config.contextWindow ?? registered.contextWindow, maxTokens: config.maxTokens ?? registered.maxTokens };
   const auth = await runtime.getAuth(model, { apiKey: explicitKey, signal });
   signal.throwIfAborted();
-  if (!auth) throw new Error(`No Pi credentials configured for ${config.provider}; use Pi login, its environment variables, or apiKeyEnv.`);
+  if (!auth) throw new Error(`No Pi credentials configured for ${config.provider}; use /apikey ${config.provider} to configure this provider, then /model to select an available model. Credentials are provider-specific.`);
   const builtin = builtinModels().getModel(config.provider, config.model);
   const costKnown = !config.baseUrl && (builtin?.baseUrl === model.baseUrl || (!builtin && Object.values(model.cost).some((value) => typeof value === "number" && value > 0)));
   const fallbackSessionId = randomUUID();

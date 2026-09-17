@@ -203,9 +203,10 @@ export class SettingsDialogs {
       if (command === "model") {
         if (!this.controller.getModels || !this.controller.selectModel) throw new Error("unsupported");
         const models = await this.controller.getModels();
-        const items = models.map(model => ({ value: `${model.provider}/${model.model}`, label: model.model, description: `${model.provider} · ${model.name}` }));
-        if (!items.length) throw new Error("no models");
-        const selected = await this.ask(`选择 ${argument || "all"} 模型（输入名称或 provider 搜索）`, { items });
+        if (this.abort.signal.aborted) throw cancelled();
+        const items = models.map(model => ({ value: `${model.provider}/${model.model}`, label: `${model.provider}/${model.model}`, description: model.name }));
+        if (!items.length) { this.print("xloom", "没有已接入的模型。请先使用 /apikey 配置供应商，再使用 /model 选择模型。", true); return; }
+        const selected = await this.ask(`选择 ${argument || "all"} 模型（仅已接入供应商；输入名称搜索）`, { items });
         if (this.abort.signal.aborted) throw cancelled();
         const model = models[items.findIndex(item => item.value === selected)]!;
         await this.controller.selectModel(model.provider, model.model, (argument || "all") as ModelRole, this.abort.signal);
@@ -225,7 +226,7 @@ export class SettingsDialogs {
           const key = await this.ask(`${provider} API Key（输入将遮蔽，不进入会话和历史）`, { secret: true });
           if (this.abort.signal.aborted) throw cancelled();
           await this.controller.saveApiKey(provider, key, this.abort.signal);
-          this.print("xloom", "API Key 已保存到本地 Pi 凭据存储。后续请求使用更新后的凭据。");
+          this.print("xloom", `${provider} 的 API Key 已保存。使用 /model 选择该供应商的模型；凭据不自动通用于其他供应商。`);
         } else if (command === "logout") {
           if (!this.controller.logout) throw new Error("unsupported");
           await this.ask(`确认移除 ${provider} 的本地凭据？环境变量中的凭据不受影响。`, { items: [{ value: "yes", label: "确认移除本地凭据" }] });

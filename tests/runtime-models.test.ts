@@ -309,7 +309,7 @@ describe("Pi model resolution", () => {
   });
 
   it("reports missing provider credentials without trying a model request", async () => {
-    await expect(resolveModel(selection, signal())).rejects.toThrow("No Pi credentials configured");
+    await expect(resolveModel(selection, signal())).rejects.toThrow("/apikey anthropic");
   });
 
   it("does not silently fall back if models.json is invalid", async () => {
