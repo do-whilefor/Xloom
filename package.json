@@ -2,10 +2,11 @@
   "name": "xloom",
   "version": "0.1.0",
   "private": true,
+  "license": "AGPL-3.0-only",
   "description": "Local two-agent research loop powered by Pi",
   "type": "module",
   "bin": { "xloom": "dist/cli.js" },
-  "files": ["dist", "resources", "settings.example.json", "README.md", "LICENSE"],
+  "files": ["dist", "resources", "settings.example.json", "README.md", "README.en.md", "README.ko.md", "LICENSE"],
   "engines": { "node": ">=24.0.0" },
   "scripts": {
     "start": "tsx src/cli.ts",
